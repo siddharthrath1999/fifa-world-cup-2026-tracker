@@ -334,13 +334,33 @@ function MatchRow({
 function SourceHealth({ sources }: { sources: SourceState[] }) {
   return (
     <section className="source-strip" aria-label="Live data sources">
-      {sources.map((source) => (
-        <article className={`source-chip ${sourceTone(source.status)}`} key={source.id}>
-          <span />
-          <strong>{source.label}</strong>
-          <small>{source.detail}</small>
-        </article>
-      ))}
+      {sources.map((source) => {
+        const content = (
+          <>
+            <span className="source-dot" />
+            <strong>{source.label}</strong>
+            <small>{source.detail}</small>
+            <ExternalLink className="source-link-icon" size={14} aria-hidden="true" />
+          </>
+        )
+
+        return source.href ? (
+          <a
+            className={`source-chip ${sourceTone(source.status)}`}
+            href={source.href}
+            target="_blank"
+            rel="noreferrer"
+            key={source.id}
+            aria-label={`Open ${source.label}`}
+          >
+            {content}
+          </a>
+        ) : (
+          <article className={`source-chip ${sourceTone(source.status)}`} key={source.id}>
+            {content}
+          </article>
+        )
+      })}
     </section>
   )
 }
@@ -731,14 +751,38 @@ function groupRoster(players: TeamPlayer[]) {
   })
 }
 
+function ProfilePhoto({
+  src,
+  fallback,
+  className,
+}: {
+  src?: string
+  fallback: string
+  className: string
+}) {
+  return (
+    <span className={className}>
+      {src ? (
+        <img
+          src={src}
+          alt=""
+          loading="lazy"
+          onError={(event) => {
+            event.currentTarget.style.display = 'none'
+            const fallbackNode = event.currentTarget.nextElementSibling
+            if (fallbackNode instanceof HTMLElement) fallbackNode.hidden = false
+          }}
+        />
+      ) : null}
+      <span hidden={Boolean(src)}>{fallback}</span>
+    </span>
+  )
+}
+
 function PlayerCard({ player }: { player: TeamPlayer }) {
   return (
     <article className="player-card">
-      {player.headshot ? (
-        <img src={player.headshot} alt="" loading="lazy" />
-      ) : (
-        <span className="player-avatar">{playerInitials(player.name)}</span>
-      )}
+      <ProfilePhoto src={player.headshot} fallback={playerInitials(player.name)} className="profile-photo player-photo" />
       <div>
         <strong>{player.jersey ? `#${player.jersey} ${player.name}` : player.name}</strong>
         <span>
@@ -747,6 +791,18 @@ function PlayerCard({ player }: { player: TeamPlayer }) {
         </span>
       </div>
       {player.injuries.length ? <small>Injury note</small> : null}
+    </article>
+  )
+}
+
+function StaffCard({ member }: { member: NonNullable<TeamProfile['staff']>[number] }) {
+  return (
+    <article className="staff-card">
+      <ProfilePhoto src={member.headshot} fallback={playerInitials(member.name)} className="profile-photo staff-photo" />
+      <div>
+        <strong>{member.name}</strong>
+        <small>{member.role ?? 'Staff'}</small>
+      </div>
     </article>
   )
 }
@@ -860,10 +916,7 @@ function TeamProfilePanel({
           {staff.length ? (
             <div className="staff-list">
               {staff.map((member) => (
-                <span key={member.id}>
-                  <strong>{member.name}</strong>
-                  <small>{member.role ?? 'Staff'}</small>
-                </span>
+                <StaffCard member={member} key={member.id} />
               ))}
             </div>
           ) : (

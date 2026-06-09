@@ -152,6 +152,7 @@ export type TeamStaff = {
   id: string
   name: string
   role?: string
+  headshot?: string
 }
 
 export type TeamUpdate = {

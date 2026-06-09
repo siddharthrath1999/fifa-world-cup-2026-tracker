@@ -19,6 +19,9 @@ const FIFA_MATCHES_URL =
   'https://api.fifa.com/api/v3/calendar/matches?language=en&count=500&idCompetition=17&from=2026-06-11&to=2026-07-20'
 const ESPN_SCOREBOARD_URL =
   'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=20260611-20260719&limit=200'
+const FIFA_PUBLIC_SCHEDULE_URL = 'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/schedule'
+const ESPN_PUBLIC_SCOREBOARD_URL = 'https://www.espn.com/soccer/scoreboard/_/league/fifa.world'
+const ESPN_PUBLIC_TEAMS_URL = 'https://www.espn.com/soccer/teams/_/league/fifa.world'
 
 type Localized = { Description?: string }
 
@@ -222,6 +225,7 @@ type EspnRoster = {
     lastName?: string
     displayName?: string
     role?: string
+    headshot?: { href?: string }
   }[]
 }
 
@@ -570,7 +574,7 @@ export async function loadWorldCupData(signal?: AbortSignal): Promise<WorldCupDa
       label: 'Official FIFA schedule',
       status: 'online',
       detail: `${fifaResult.value.Results?.length ?? 0} matches loaded`,
-      href: 'https://api.fifa.com',
+      href: FIFA_PUBLIC_SCHEDULE_URL,
     })
   } else {
     sourceStates.push({
@@ -578,7 +582,7 @@ export async function loadWorldCupData(signal?: AbortSignal): Promise<WorldCupDa
       label: 'Official FIFA schedule',
       status: 'offline',
       detail: fifaResult.reason instanceof Error ? fifaResult.reason.message : 'FIFA feed failed',
-      href: 'https://api.fifa.com',
+      href: FIFA_PUBLIC_SCHEDULE_URL,
     })
   }
 
@@ -588,7 +592,7 @@ export async function loadWorldCupData(signal?: AbortSignal): Promise<WorldCupDa
       label: 'Live match details',
       status: espnEvents.length ? 'online' : 'degraded',
       detail: espnEvents.length ? 'Scores, logos and links connected' : 'Waiting for match detail feed',
-      href: 'https://site.api.espn.com',
+      href: ESPN_PUBLIC_SCOREBOARD_URL,
     })
   } else {
     sourceStates.push({
@@ -596,7 +600,7 @@ export async function loadWorldCupData(signal?: AbortSignal): Promise<WorldCupDa
       label: 'Live match details',
       status: 'degraded',
       detail: espnResult.reason instanceof Error ? espnResult.reason.message : 'ESPN fallback failed',
-      href: 'https://site.api.espn.com',
+      href: ESPN_PUBLIC_SCOREBOARD_URL,
     })
   }
 
@@ -605,7 +609,7 @@ export async function loadWorldCupData(signal?: AbortSignal): Promise<WorldCupDa
     label: 'Team media',
     status: teamMap.size ? 'online' : 'degraded',
     detail: teamMap.size ? 'Logos and team links connected' : 'Logos will appear when available',
-    href: 'https://site.api.espn.com',
+    href: ESPN_PUBLIC_TEAMS_URL,
   })
 
   const espnMap = buildEspnEventMap(espnEvents)
@@ -807,6 +811,7 @@ function parseStaff(roster?: EspnRoster): TeamStaff[] {
           id: coach.id ?? `staff-${index}`,
           name,
           role: coach.role ?? (index === 0 ? 'Head coach / manager' : 'Technical staff'),
+          headshot: coach.headshot?.href,
         }
       })
       .filter(Boolean) as TeamStaff[]
