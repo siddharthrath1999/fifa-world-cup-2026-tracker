@@ -10,6 +10,7 @@ export type SourceState = {
 
 export type Team = {
   id: string
+  fifaId?: string
   name: string
   shortName: string
   code: string
