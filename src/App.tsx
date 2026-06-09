@@ -28,10 +28,21 @@ import {
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { downloadCalendar } from './lib/calendar'
-import { loadMatchExtras, loadWorldCupData, watchSources } from './lib/sources'
+import { loadMatchExtras, loadTeamProfile, loadWorldCupData, watchSources } from './lib/sources'
 import { buildStandings, getBestThirds } from './lib/standings'
 import { formatIstDateKey, formatIstDateTime, formatIstDay, getKickoffDistance, getTodayIstKey } from './lib/time'
-import type { GroupStanding, Match, MatchExtras, SourceState, StandingRow, Team, Venue, WorldCupData } from './types'
+import type {
+  GroupStanding,
+  Match,
+  MatchExtras,
+  SourceState,
+  StandingRow,
+  Team,
+  TeamPlayer,
+  TeamProfile,
+  Venue,
+  WorldCupData,
+} from './types'
 
 type ViewMode = 'matches' | 'groups' | 'bracket' | 'teams' | 'venues'
 type QuickFilter = 'all' | 'today' | 'live' | 'upcoming' | 'favorites'
@@ -61,6 +72,11 @@ function getInitialView(): ViewMode {
 function getInitialMatchId() {
   if (typeof window === 'undefined') return null
   return new URLSearchParams(window.location.search).get('match')
+}
+
+function getInitialTeamCode() {
+  if (typeof window === 'undefined') return null
+  return new URLSearchParams(window.location.search).get('team')
 }
 
 async function copyText(text: string) {
@@ -194,15 +210,51 @@ function TeamMark({ team, size = 'md' }: { team: Team; size?: 'sm' | 'md' | 'lg'
   )
 }
 
-function TeamName({ team, align = 'left' }: { team: Team; align?: 'left' | 'right' }) {
-  return (
-    <span className={`team-name ${align}`}>
+function TeamName({
+  team,
+  align = 'left',
+  onTeamSelect,
+}: {
+  team: Team
+  align?: 'left' | 'right'
+  onTeamSelect?: (team: Team) => void
+}) {
+  const content = (
+    <>
       <TeamMark team={team} />
       <span>
         <strong>{team.shortName}</strong>
         <small>{team.code}</small>
       </span>
-    </span>
+    </>
+  )
+
+  if (onTeamSelect) {
+    return (
+      <button
+        className={`team-name team-button ${align}`}
+        type="button"
+        onClick={(event) => {
+          event.stopPropagation()
+          onTeamSelect(team)
+        }}
+        aria-label={`Open ${team.shortName} nation page`}
+      >
+        {content}
+      </button>
+    )
+  }
+
+  return <span className={`team-name ${align}`}>{content}</span>
+}
+
+function getTeamMatchList(team: Team, matches: Match[]) {
+  return matches.filter(
+    (match) =>
+      match.home.code === team.code ||
+      match.away.code === team.code ||
+      match.home.id === team.id ||
+      match.away.id === team.id,
   )
 }
 
@@ -233,21 +285,23 @@ function MatchRow({
   favorite,
   onSelect,
   onFavorite,
+  onTeamSelect,
 }: {
   match: Match
   selected: boolean
   favorite: boolean
   onSelect: (id: string) => void
   onFavorite: (id: string) => void
+  onTeamSelect: (team: Team) => void
 }) {
   return (
     <article className={`match-row ${selected ? 'selected' : ''}`} data-match-id={match.id} onClick={() => onSelect(match.id)}>
       <div className="match-row-main">
         <div className="match-number">M{match.matchNumber}</div>
         <div className="match-teams">
-          <TeamName team={match.home} />
+          <TeamName team={match.home} onTeamSelect={onTeamSelect} />
           <Score match={match} />
-          <TeamName team={match.away} align="right" />
+          <TeamName team={match.away} align="right" onTeamSelect={onTeamSelect} />
         </div>
       </div>
       <div className="match-row-meta">
@@ -281,11 +335,11 @@ function SourceHealth({ sources }: { sources: SourceState[] }) {
   return (
     <section className="source-strip" aria-label="Live data sources">
       {sources.map((source) => (
-        <a className={`source-chip ${sourceTone(source.status)}`} href={source.href} target="_blank" rel="noreferrer" key={source.id}>
+        <article className={`source-chip ${sourceTone(source.status)}`} key={source.id}>
           <span />
           <strong>{source.label}</strong>
           <small>{source.detail}</small>
-        </a>
+        </article>
       ))}
     </section>
   )
@@ -352,6 +406,7 @@ function DetailView({
   onDownloadOne,
   onShare,
   shareStatus,
+  onTeamSelect,
   variant = 'side',
 }: {
   match?: Match
@@ -360,6 +415,7 @@ function DetailView({
   onDownloadOne: (match: Match) => void
   onShare?: (match: Match) => void
   shareStatus?: ShareStatus
+  onTeamSelect: (team: Team) => void
   variant?: 'side' | 'inline'
 }) {
   const panelClassName = `detail-panel ${variant}`
@@ -458,9 +514,9 @@ function DetailView({
       </div>
 
       <section className="scoreboard">
-        <TeamName team={match.home} />
+        <TeamName team={match.home} onTeamSelect={onTeamSelect} />
         <Score match={match} />
-        <TeamName team={match.away} align="right" />
+        <TeamName team={match.away} align="right" onTeamSelect={onTeamSelect} />
       </section>
 
       <div className="detail-facts">
@@ -529,7 +585,7 @@ function DetailView({
   )
 }
 
-function StandingsTable({ group }: { group: GroupStanding }) {
+function StandingsTable({ group, onTeamSelect }: { group: GroupStanding; onTeamSelect: (team: Team) => void }) {
   return (
     <section className="standings-table">
       <div className="table-header">
@@ -554,8 +610,10 @@ function StandingsTable({ group }: { group: GroupStanding }) {
           {group.rows.map((row, index) => (
             <tr key={row.team.id} className={index < 2 ? 'advance' : index === 2 ? 'third' : ''}>
               <td>
-                <TeamMark team={row.team} size="sm" />
-                {row.team.shortName}
+                <button className="standings-team" type="button" onClick={() => onTeamSelect(row.team)}>
+                  <TeamMark team={row.team} size="sm" />
+                  {row.team.shortName}
+                </button>
               </td>
               <td>{row.played}</td>
               <td>{row.won}</td>
@@ -575,7 +633,7 @@ function StandingsTable({ group }: { group: GroupStanding }) {
   )
 }
 
-function BestThirds({ rows }: { rows: StandingRow[] }) {
+function BestThirds({ rows, onTeamSelect }: { rows: StandingRow[]; onTeamSelect: (team: Team) => void }) {
   return (
     <section className="thirds-panel">
       <div className="block-title">
@@ -584,19 +642,24 @@ function BestThirds({ rows }: { rows: StandingRow[] }) {
       </div>
       <div className="thirds-list">
         {rows.map((row, index) => (
-          <span key={`${row.group}-${row.team.id}`} className={index < 8 ? 'inside' : ''}>
+          <button
+            type="button"
+            key={`${row.group}-${row.team.id}`}
+            className={index < 8 ? 'inside' : ''}
+            onClick={() => onTeamSelect(row.team)}
+          >
             <strong>{index + 1}</strong>
             <TeamMark team={row.team} size="sm" />
             {row.team.shortName}
             <small>{row.group} - {row.points} pts</small>
-          </span>
+          </button>
         ))}
       </div>
     </section>
   )
 }
 
-function GroupsView({ standings }: { standings: GroupStanding[] }) {
+function GroupsView({ standings, onTeamSelect }: { standings: GroupStanding[]; onTeamSelect: (team: Team) => void }) {
   return (
     <div className="view-stack">
       <section className="info-band">
@@ -606,10 +669,10 @@ function GroupsView({ standings }: { standings: GroupStanding[] }) {
           goals scored, then team name until head-to-head and fair-play data appear.
         </span>
       </section>
-      <BestThirds rows={getBestThirds(standings)} />
+      <BestThirds rows={getBestThirds(standings)} onTeamSelect={onTeamSelect} />
       <div className="standings-grid">
         {standings.map((group) => (
-          <StandingsTable group={group} key={group.group} />
+          <StandingsTable group={group} key={group.group} onTeamSelect={onTeamSelect} />
         ))}
       </div>
     </div>
@@ -640,27 +703,325 @@ function BracketView({ matches }: { matches: Match[] }) {
   )
 }
 
-function TeamsView({ teams, matches, onTeamFilter }: { teams: Team[]; matches: Match[]; onTeamFilter: (team: string) => void }) {
+function playerInitials(name: string) {
+  return name
+    .split(' ')
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase()
+}
+
+function groupRoster(players: TeamPlayer[]) {
+  const order = ['Goalkeeper', 'Defender', 'Midfielder', 'Forward']
+  const groups = players.reduce<Map<string, TeamPlayer[]>>((map, player) => {
+    const key = player.position ?? 'Squad'
+    map.set(key, [...(map.get(key) ?? []), player])
+    return map
+  }, new Map())
+
+  return [...groups.entries()].sort(([a], [b]) => {
+    const aIndex = order.indexOf(a)
+    const bIndex = order.indexOf(b)
+    if (aIndex === -1 && bIndex === -1) return a.localeCompare(b)
+    if (aIndex === -1) return 1
+    if (bIndex === -1) return -1
+    return aIndex - bIndex
+  })
+}
+
+function PlayerCard({ player }: { player: TeamPlayer }) {
   return (
-    <div className="directory-grid">
-      {teams.map((team) => {
-        const teamMatches = matches.filter((match) => match.home.code === team.code || match.away.code === team.code)
-        const group = teamMatches.find((match) => match.group)?.group
-        return (
-          <article className="directory-card" key={team.code}>
-            <div>
-              <TeamMark team={team} size="lg" />
-              <h3>{team.shortName}</h3>
-              <span>{team.code}{group ? ` - ${group}` : ''}</span>
+    <article className="player-card">
+      {player.headshot ? (
+        <img src={player.headshot} alt="" loading="lazy" />
+      ) : (
+        <span className="player-avatar">{playerInitials(player.name)}</span>
+      )}
+      <div>
+        <strong>{player.jersey ? `#${player.jersey} ${player.name}` : player.name}</strong>
+        <span>
+          {[player.position, player.age ? `${player.age} yrs` : undefined, player.status].filter(Boolean).join(' - ') ||
+            'Squad details pending'}
+        </span>
+      </div>
+      {player.injuries.length ? <small>Injury note</small> : null}
+    </article>
+  )
+}
+
+function TeamProfilePanel({
+  team,
+  matches,
+  profile,
+  loading,
+  onTeamFilter,
+  onMatchSelect,
+}: {
+  team: Team
+  matches: Match[]
+  profile: TeamProfile | null
+  loading: boolean
+  onTeamFilter: (team: string) => void
+  onMatchSelect: (matchId: string) => void
+}) {
+  const activeProfile = profile?.team.code === team.code || profile?.team.id === team.id ? profile : null
+  const roster = activeProfile?.roster ?? []
+  const staff = activeProfile?.staff ?? []
+  const injuries = activeProfile?.injuries ?? []
+  const updates = activeProfile?.updates ?? []
+  const links = activeProfile?.links ?? team.links ?? []
+  const fixtures = getTeamMatchList(team, matches).sort((a, b) => new Date(a.dateUtc).getTime() - new Date(b.dateUtc).getTime())
+  const group = fixtures.find((match) => match.group)?.group
+  const source = activeProfile?.source ?? {
+    id: 'team-profile-loading',
+    label: 'Team profile',
+    status: 'degraded',
+    detail: loading ? 'Loading team profile...' : 'Select a nation to load team details.',
+  } satisfies SourceState
+  const profileTeam = activeProfile?.team ?? team
+
+  return (
+    <section className="team-profile">
+      <div
+        className="team-profile-hero"
+        style={{ '--team-accent': `#${profileTeam.color ?? '0f8b62'}` } as React.CSSProperties}
+      >
+        <TeamMark team={profileTeam} size="lg" />
+        <div>
+          <span>{group ?? 'World Cup squad'}</span>
+          <h2>{profileTeam.name}</h2>
+          <p>{activeProfile?.standingSummary ?? `${fixtures.length} scheduled matches`}</p>
+        </div>
+        <button type="button" onClick={() => onTeamFilter(team.code)}>
+          View fixtures
+          <ChevronRight size={15} />
+        </button>
+      </div>
+
+      <div className="team-profile-metrics">
+        <div>
+          <span>Record</span>
+          <strong>{activeProfile?.record ?? 'Not started'}</strong>
+        </div>
+        <div>
+          <span>Roster</span>
+          <strong>{roster.length || '-'}</strong>
+        </div>
+        <div>
+          <span>Injuries</span>
+          <strong>{injuries.length}</strong>
+        </div>
+        <div>
+          <span>Staff</span>
+          <strong>{staff.length || '-'}</strong>
+        </div>
+      </div>
+
+      <div className={`source-note ${sourceTone(source.status)}`}>
+        {loading ? <RefreshCw size={15} className="spin" /> : <Info size={15} />}
+        {source.detail}
+      </div>
+
+      <div className="team-profile-grid">
+        <section className="team-section roster-section">
+          <div className="block-title">
+            <Users size={18} />
+            <h3>Players and squad</h3>
+          </div>
+          {roster.length ? (
+            <div className="roster-groups">
+              {groupRoster(roster).map(([position, players]) => (
+                <div key={position}>
+                  <h4>{position}</h4>
+                  <div className="player-grid">
+                    {players.map((player) => (
+                      <PlayerCard player={player} key={player.id} />
+                    ))}
+                  </div>
+                </div>
+              ))}
             </div>
-            <p>{teamMatches.length} matches in schedule</p>
-            <button type="button" onClick={() => onTeamFilter(team.code)}>
-              View fixtures
-              <ChevronRight size={15} />
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>Roster has not been published by the current free team feed yet.</span>
+            </div>
+          )}
+          <p className="team-note">Match substitutes are published inside live line-ups when a match feed releases them.</p>
+        </section>
+
+        <section className="team-section">
+          <div className="block-title">
+            <Shield size={18} />
+            <h3>Coach and staff</h3>
+          </div>
+          {staff.length ? (
+            <div className="staff-list">
+              {staff.map((member) => (
+                <span key={member.id}>
+                  <strong>{member.name}</strong>
+                  <small>{member.role ?? 'Staff'}</small>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>Coach and manager details are not published by the current roster feed yet.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="team-section">
+          <div className="block-title">
+            <AlertTriangle size={18} />
+            <h3>Injuries</h3>
+          </div>
+          {injuries.length ? (
+            <div className="injury-list">
+              {injuries.map((player) => (
+                <span key={player.id}>
+                  <strong>{player.name}</strong>
+                  <small>{player.injuries.join(', ')}</small>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>No injury notes are published for this squad in the roster feed.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="team-section">
+          <div className="block-title">
+            <Activity size={18} />
+            <h3>Live updates and squad changes</h3>
+          </div>
+          {updates.length ? (
+            <ol className="update-list">
+              {updates.map((update) => (
+                <li key={update.id}>
+                  <strong>{update.label}</strong>
+                  <span>{update.detail}</span>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>No squad-change notes have been published by the free team feed yet.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="team-section">
+          <div className="block-title">
+            <Calendar size={18} />
+            <h3>Team fixtures</h3>
+          </div>
+          <div className="team-fixtures">
+            {fixtures.slice(0, 6).map((match) => (
+              <button type="button" key={match.id} onClick={() => onMatchSelect(match.id)}>
+                <span>M{match.matchNumber}</span>
+                <strong>{match.home.code} vs {match.away.code}</strong>
+                <small>{formatIstDateTime(match.dateUtc)}</small>
+              </button>
+            ))}
+          </div>
+        </section>
+
+        <section className="team-section">
+          <div className="block-title">
+            <ExternalLink size={18} />
+            <h3>Official media links</h3>
+          </div>
+          {links.length ? (
+            <div className="link-list">
+              {links.slice(0, 6).map((link) => (
+                <a href={link.href} target="_blank" rel="noreferrer" key={link.href}>
+                  {link.label}
+                  <ExternalLink size={14} />
+                </a>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>No official team media links are currently published by the connected feeds.</span>
+            </div>
+          )}
+        </section>
+      </div>
+    </section>
+  )
+}
+
+function TeamsView({
+  teams,
+  matches,
+  selectedTeamCode,
+  teamProfile,
+  teamProfileLoading,
+  onTeamFilter,
+  onTeamSelect,
+  onMatchSelect,
+}: {
+  teams: Team[]
+  matches: Match[]
+  selectedTeamCode: string | null
+  teamProfile: TeamProfile | null
+  teamProfileLoading: boolean
+  onTeamFilter: (team: string) => void
+  onTeamSelect: (team: Team) => void
+  onMatchSelect: (matchId: string) => void
+}) {
+  const selectedTeam = teams.find((team) => team.code === selectedTeamCode) ?? teams[0]
+
+  if (!selectedTeam) {
+    return (
+      <section className="loading-panel">
+        <Users size={22} />
+        <h2>No teams loaded yet</h2>
+        <p>Team pages appear once the live schedule feed returns nations.</p>
+      </section>
+    )
+  }
+
+  return (
+    <div className="teams-layout">
+      <aside className="team-directory" aria-label="Nations">
+        {teams.map((team) => {
+          const fixtures = getTeamMatchList(team, matches)
+          const group = fixtures.find((match) => match.group)?.group
+          return (
+            <button
+              type="button"
+              className={selectedTeam.code === team.code ? 'active' : ''}
+              key={team.code}
+              onClick={() => onTeamSelect(team)}
+            >
+              <TeamMark team={team} size="sm" />
+              <span>
+                <strong>{team.shortName}</strong>
+                <small>{team.code}{group ? ` - ${group}` : ''}</small>
+              </span>
+              <em>{fixtures.length}</em>
             </button>
-          </article>
-        )
-      })}
+          )
+        })}
+      </aside>
+      <TeamProfilePanel
+        team={selectedTeam}
+        matches={matches}
+        profile={teamProfile}
+        loading={teamProfileLoading}
+        onTeamFilter={onTeamFilter}
+        onMatchSelect={onMatchSelect}
+      />
     </div>
   )
 }
@@ -696,6 +1057,7 @@ function App() {
   const [refreshing, setRefreshing] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(() => getInitialMatchId())
+  const [selectedTeamCode, setSelectedTeamCode] = useState<string | null>(() => getInitialTeamCode())
   const [view, setView] = useState<ViewMode>(() => getInitialView())
   const [quickFilter, setQuickFilter] = useState<QuickFilter>('all')
   const [query, setQuery] = useState('')
@@ -703,6 +1065,8 @@ function App() {
   const [teamFilter, setTeamFilter] = useState('all')
   const [extras, setExtras] = useState<MatchExtras>(blankExtras)
   const [extrasLoading, setExtrasLoading] = useState(false)
+  const [teamProfile, setTeamProfile] = useState<TeamProfile | null>(null)
+  const [teamProfileLoading, setTeamProfileLoading] = useState(false)
   const [shareStatus, setShareStatus] = useState<ShareStatus>({ state: 'idle' })
   const shouldScrollToSelected = useRef(Boolean(getInitialMatchId()))
   const { favorites, toggle } = useLocalFavorites()
@@ -744,6 +1108,7 @@ function App() {
   const selectedMatch = matches.find((match) => match.id === selectedId) ?? matches[0]
   const standings = useMemo(() => buildStandings(matches), [matches])
   const teams = useMemo(() => getTeams(matches), [matches])
+  const selectedTeam = teams.find((team) => team.code === selectedTeamCode) ?? null
   const venues = useMemo(() => getVenues(matches), [matches])
   const liveCount = matches.filter((match) => match.status.state === 'live' || match.status.state === 'halftime').length
   const todayKey = getTodayIstKey()
@@ -760,8 +1125,10 @@ function App() {
       const params = new URLSearchParams(window.location.search)
       const nextView = params.get('view')
       const nextMatch = params.get('match')
+      const nextTeam = params.get('team')
       setView(isViewMode(nextView) ? nextView : 'matches')
       setSelectedId(nextMatch)
+      setSelectedTeamCode(nextTeam)
     }
 
     window.addEventListener('popstate', handlePopState)
@@ -772,9 +1139,15 @@ function App() {
     if (!selectedMatch) return
     const url = new URL(window.location.href)
     url.searchParams.set('view', view)
-    url.searchParams.set('match', selectedMatch.id)
+    if (view === 'teams') {
+      if (selectedTeam) url.searchParams.set('team', selectedTeam.code)
+      url.searchParams.delete('match')
+    } else {
+      url.searchParams.set('match', selectedMatch.id)
+      url.searchParams.delete('team')
+    }
     window.history.replaceState(null, '', `${url.pathname}?${url.searchParams.toString()}${url.hash}`)
-  }, [selectedMatch, view])
+  }, [selectedMatch, selectedTeam, view])
 
   useEffect(() => {
     if (!shouldScrollToSelected.current || !selectedMatch || loading) return
@@ -804,6 +1177,26 @@ function App() {
       controller.abort()
     }
   }, [selectedMatch])
+
+  useEffect(() => {
+    if (!selectedTeam) return
+    const controller = new AbortController()
+    let active = true
+    queueMicrotask(() => {
+      if (active) setTeamProfileLoading(true)
+    })
+    loadTeamProfile(selectedTeam, matches, controller.signal)
+      .then((nextProfile) => {
+        if (active) setTeamProfile(nextProfile)
+      })
+      .finally(() => {
+        if (active) setTeamProfileLoading(false)
+      })
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [matches, selectedTeam])
 
   const groupOptions = useMemo(
     () => ['all', ...new Set(matches.map((match) => match.group).filter(Boolean) as string[])],
@@ -848,6 +1241,18 @@ function App() {
     setQuickFilter('all')
   }
 
+  function openTeam(team: Team) {
+    setSelectedTeamCode(team.code)
+    setView('teams')
+    setQuickFilter('all')
+  }
+
+  function openMatch(matchId: string) {
+    setSelectedId(matchId)
+    setView('matches')
+    shouldScrollToSelected.current = true
+  }
+
   function resetShareStatus() {
     window.setTimeout(() => setShareStatus({ state: 'idle' }), 2200)
   }
@@ -884,7 +1289,13 @@ function App() {
   async function shareCurrentView() {
     const url = new URL(window.location.href)
     url.searchParams.set('view', view)
-    if (selectedMatch) url.searchParams.set('match', selectedMatch.id)
+    if (view === 'teams' && selectedTeam) {
+      url.searchParams.set('team', selectedTeam.code)
+      url.searchParams.delete('match')
+    } else if (selectedMatch) {
+      url.searchParams.set('match', selectedMatch.id)
+      url.searchParams.delete('team')
+    }
     await shareUrl(url, 'FIFA World Cup 2026 Tracker', 'app')
   }
 
@@ -970,36 +1381,38 @@ function App() {
         })}
       </nav>
 
-      <div className="workspace">
+      <div className={`workspace ${view === 'matches' ? '' : 'wide-workspace'}`}>
         <section className="main-panel">
-          <div className="toolbar">
-            <div className="search-box">
-              <Search size={17} />
-              <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search team, venue, city, group..." />
+          {view === 'matches' ? (
+            <div className="toolbar">
+              <div className="search-box">
+                <Search size={17} />
+                <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search team, venue, city, group..." />
+              </div>
+              <div className="select-row">
+                <label>
+                  <Filter size={15} />
+                  <select value={groupFilter} onChange={(event) => setGroupFilter(event.target.value)}>
+                    {groupOptions.map((group) => (
+                      <option value={group} key={group}>
+                        {group === 'all' ? 'All groups' : group}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <Users size={15} />
+                  <select value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)}>
+                    {teamOptions.map((team) => (
+                      <option value={team} key={team}>
+                        {team === 'all' ? 'All teams' : team}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             </div>
-            <div className="select-row">
-              <label>
-                <Filter size={15} />
-                <select value={groupFilter} onChange={(event) => setGroupFilter(event.target.value)}>
-                  {groupOptions.map((group) => (
-                    <option value={group} key={group}>
-                      {group === 'all' ? 'All groups' : group}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label>
-                <Users size={15} />
-                <select value={teamFilter} onChange={(event) => setTeamFilter(event.target.value)}>
-                  {teamOptions.map((team) => (
-                    <option value={team} key={team}>
-                      {team === 'all' ? 'All teams' : team}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </div>
-          </div>
+          ) : null}
 
           {view === 'matches' ? (
             <>
@@ -1047,6 +1460,7 @@ function App() {
                               favorite={favorites.includes(match.id)}
                               onSelect={setSelectedId}
                               onFavorite={toggle}
+                              onTeamSelect={openTeam}
                             />
                             {selected ? (
                               <div className="inline-detail">
@@ -1057,6 +1471,7 @@ function App() {
                                   onDownloadOne={(match) => downloadCalendar([match], `fwc2026-match-${match.matchNumber}.ics`)}
                                   onShare={shareMatch}
                                   shareStatus={shareStatus}
+                                  onTeamSelect={openTeam}
                                   variant="inline"
                                 />
                               </div>
@@ -1077,21 +1492,35 @@ function App() {
             </>
           ) : null}
 
-          {view === 'groups' ? <GroupsView standings={standings} /> : null}
+          {view === 'groups' ? <GroupsView standings={standings} onTeamSelect={openTeam} /> : null}
           {view === 'bracket' ? <BracketView matches={matches.filter(isKnockout)} /> : null}
-          {view === 'teams' ? <TeamsView teams={teams} matches={matches} onTeamFilter={selectTeamFilter} /> : null}
+          {view === 'teams' ? (
+            <TeamsView
+              teams={teams}
+              matches={matches}
+              selectedTeamCode={selectedTeam?.code ?? selectedTeamCode}
+              teamProfile={teamProfile}
+              teamProfileLoading={teamProfileLoading}
+              onTeamFilter={selectTeamFilter}
+              onTeamSelect={openTeam}
+              onMatchSelect={openMatch}
+            />
+          ) : null}
           {view === 'venues' ? <VenuesView venues={venues} matches={matches} /> : null}
         </section>
 
-        <DetailView
-          match={selectedMatch}
-          extras={extras}
-          extrasLoading={extrasLoading}
-          onDownloadOne={(match) => downloadCalendar([match], `fwc2026-match-${match.matchNumber}.ics`)}
-          onShare={shareMatch}
-          shareStatus={shareStatus}
-          variant="side"
-        />
+        {view === 'matches' ? (
+          <DetailView
+            match={selectedMatch}
+            extras={extras}
+            extrasLoading={extrasLoading}
+            onDownloadOne={(match) => downloadCalendar([match], `fwc2026-match-${match.matchNumber}.ics`)}
+            onShare={shareMatch}
+            shareStatus={shareStatus}
+            onTeamSelect={openTeam}
+            variant="side"
+          />
+        ) : null}
       </div>
 
       <section className="bottom-info">

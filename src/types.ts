@@ -133,6 +133,53 @@ export type MatchExtras = {
   broadcasts: string[]
 }
 
+export type TeamPlayer = {
+  id: string
+  name: string
+  shortName?: string
+  jersey?: string
+  position?: string
+  age?: number
+  height?: string
+  weight?: string
+  headshot?: string
+  status?: string
+  injuries: string[]
+  links: ExternalLink[]
+}
+
+export type TeamStaff = {
+  id: string
+  name: string
+  role?: string
+}
+
+export type TeamUpdate = {
+  id: string
+  label: string
+  detail: string
+  href?: string
+}
+
+export type TeamProfile = {
+  source: SourceState
+  team: Team
+  record?: string
+  standingSummary?: string
+  nextEvent?: {
+    name?: string
+    dateUtc?: string
+    venue?: string
+    status?: string
+  }
+  roster: TeamPlayer[]
+  staff: TeamStaff[]
+  injuries: TeamPlayer[]
+  updates: TeamUpdate[]
+  links: ExternalLink[]
+  rosterUpdatedAt?: string
+}
+
 export type WorldCupData = {
   matches: Match[]
   sourceStates: SourceState[]

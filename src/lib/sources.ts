@@ -7,6 +7,10 @@ import type {
   SourceState,
   StatLine,
   Team,
+  TeamPlayer,
+  TeamProfile,
+  TeamStaff,
+  TeamUpdate,
   Venue,
   WorldCupData,
 } from '../types'
@@ -178,6 +182,70 @@ type EspnSummary = {
   }[]
 }
 
+type EspnLink = {
+  href?: string
+  text?: string
+  shortText?: string
+  rel?: string[]
+  isPremium?: boolean
+}
+
+type EspnTeamDetails = {
+  team?: {
+    id?: string
+    abbreviation?: string
+    displayName?: string
+    shortDisplayName?: string
+    color?: string
+    alternateColor?: string
+    logos?: { href?: string }[]
+    record?: { items?: { summary?: string; description?: string; type?: string }[] }
+    links?: EspnLink[]
+    nextEvent?: {
+      name?: string
+      date?: string
+      competitions?: {
+        status?: { type?: { description?: string; shortDetail?: string } }
+        venue?: { fullName?: string; address?: { city?: string; country?: string } }
+      }[]
+    }[]
+    standingSummary?: string
+  }
+}
+
+type EspnRoster = {
+  timestamp?: string
+  athletes?: EspnAthlete[]
+  coach?: {
+    id?: string
+    firstName?: string
+    lastName?: string
+    displayName?: string
+    role?: string
+  }[]
+}
+
+type EspnAthlete = {
+  id?: string
+  displayName?: string
+  shortName?: string
+  jersey?: string
+  position?: { displayName?: string; abbreviation?: string; name?: string }
+  age?: number
+  displayHeight?: string
+  displayWeight?: string
+  headshot?: { href?: string; alt?: string }
+  status?: { name?: string; type?: string; abbreviation?: string }
+  injuries?: {
+    displayName?: string
+    name?: string
+    type?: string
+    status?: string
+    detail?: string
+  }[]
+  links?: EspnLink[]
+}
+
 async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   const response = await fetch(url, { signal })
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
@@ -277,16 +345,40 @@ function makeFifaMatch(match: FifaMatch): Match {
   }
 }
 
-function espnTeamToLinks(links?: { href?: string; text?: string; rel?: string[] }[]) {
+function espnLinksToExternal(links?: EspnLink[]) {
   return (
     links
-      ?.filter((link) => link.href && link.text)
+      ?.filter((link) => {
+        const linkText = `${link.text ?? ''} ${link.shortText ?? ''} ${link.rel?.join(' ') ?? ''}`.toLowerCase()
+        return (
+          link.href &&
+          (link.text || link.shortText) &&
+          !link.isPremium &&
+          !linkText.includes('odds') &&
+          !linkText.includes('bet') &&
+          !linkText.includes('fantasy') &&
+          !linkText.includes('insider')
+        )
+      })
       .map((link) => ({
-        label: link.text as string,
+        label: (link.shortText || link.text) as string,
         href: link.href as string,
         type: link.rel?.[0],
       })) ?? []
   )
+}
+
+function espnTeamToLinks(links?: EspnLink[]) {
+  return espnLinksToExternal(links)
+}
+
+function uniqueLinks(links: ExternalLink[]) {
+  const seen = new Set<string>()
+  return links.filter((link) => {
+    if (!link.href || seen.has(link.href)) return false
+    seen.add(link.href)
+    return true
+  })
 }
 
 function makeEspnTeamMap(events: EspnEvent[]) {
@@ -647,6 +739,211 @@ function parseHeadToHead(summary: EspnSummary | undefined): ExternalLink[] {
       })
       .filter(Boolean) as ExternalLink[]
   )
+}
+
+function profileSource(status: SourceState['status'], detail: string): SourceState {
+  return {
+    id: 'espn-team-profile',
+    label: 'Team profile',
+    status,
+    detail,
+    href: 'https://site.api.espn.com',
+  }
+}
+
+function teamMatches(team: Team, matches: Match[]) {
+  return matches.filter(
+    (match) =>
+      match.home.code === team.code ||
+      match.away.code === team.code ||
+      match.home.id === team.id ||
+      match.away.id === team.id,
+  )
+}
+
+function getScheduleNextEvent(team: Team, matches: Match[]): TeamProfile['nextEvent'] {
+  const scheduled = teamMatches(team, matches).sort((a, b) => new Date(a.dateUtc).getTime() - new Date(b.dateUtc).getTime())
+  const next = scheduled.find((match) => new Date(match.dateUtc).getTime() >= Date.now()) ?? scheduled[0]
+  if (!next) return undefined
+  return {
+    name: `${next.home.shortName} vs ${next.away.shortName}`,
+    dateUtc: next.dateUtc,
+    venue: `${next.venue.name}, ${next.venue.city}`,
+    status: next.status.label,
+  }
+}
+
+function parseNextEvent(details: EspnTeamDetails['team'], team: Team, matches: Match[]): TeamProfile['nextEvent'] {
+  const next = details?.nextEvent?.[0]
+  const competition = next?.competitions?.[0]
+  const venue = competition?.venue
+  if (next) {
+    return {
+      name: next.name,
+      dateUtc: next.date,
+      venue: venue?.fullName
+        ? `${venue.fullName}${venue.address?.city ? `, ${venue.address.city}` : ''}`
+        : undefined,
+      status: competition?.status?.type?.shortDetail ?? competition?.status?.type?.description,
+    }
+  }
+  return getScheduleNextEvent(team, matches)
+}
+
+function parseRecord(details: EspnTeamDetails['team']) {
+  return (
+    details?.record?.items?.find((item) => item.type === 'total')?.summary ??
+    details?.record?.items?.find((item) => item.summary)?.summary
+  )
+}
+
+function parseStaff(roster?: EspnRoster): TeamStaff[] {
+  return (
+    roster?.coach
+      ?.map((coach, index) => {
+        const name = coach.displayName ?? [coach.firstName, coach.lastName].filter(Boolean).join(' ')
+        if (!name) return null
+        return {
+          id: coach.id ?? `staff-${index}`,
+          name,
+          role: coach.role ?? (index === 0 ? 'Head coach / manager' : 'Technical staff'),
+        }
+      })
+      .filter(Boolean) as TeamStaff[]
+  ) ?? []
+}
+
+function parsePlayer(athlete: EspnAthlete, index: number): TeamPlayer | null {
+  const name = athlete.displayName ?? athlete.shortName
+  if (!name) return null
+  const injuries =
+    athlete.injuries
+      ?.map((injury) => injury.displayName ?? injury.detail ?? [injury.type, injury.status, injury.name].filter(Boolean).join(' - '))
+      .filter(Boolean) ?? []
+  return {
+    id: athlete.id ?? `player-${index}`,
+    name,
+    shortName: athlete.shortName,
+    jersey: athlete.jersey,
+    position: athlete.position?.displayName ?? athlete.position?.name ?? athlete.position?.abbreviation,
+    age: athlete.age,
+    height: athlete.displayHeight,
+    weight: athlete.displayWeight,
+    headshot: athlete.headshot?.href,
+    status: athlete.status?.name ?? athlete.status?.abbreviation,
+    injuries,
+    links: espnLinksToExternal(athlete.links),
+  }
+}
+
+function buildTeamProfileFallback(team: Team, matches: Match[], detail: string): TeamProfile {
+  const nextEvent = getScheduleNextEvent(team, matches)
+  const updates: TeamUpdate[] = nextEvent
+    ? [
+        {
+          id: 'next-event',
+          label: 'Next match',
+          detail: [nextEvent.name, nextEvent.status].filter(Boolean).join(' - '),
+        },
+      ]
+    : []
+
+  return {
+    source: profileSource('degraded', detail),
+    team,
+    nextEvent,
+    roster: [],
+    staff: [],
+    injuries: [],
+    updates,
+    links: uniqueLinks(team.links ?? []),
+  }
+}
+
+export async function loadTeamProfile(team: Team, matches: Match[], signal?: AbortSignal): Promise<TeamProfile> {
+  if (!/^\d+$/.test(team.id)) {
+    return buildTeamProfileFallback(team, matches, 'Team roster source is not linked for this nation yet.')
+  }
+
+  const [detailsResult, rosterResult] = await Promise.allSettled([
+    fetchJson<EspnTeamDetails>(
+      `https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/teams/${team.id}`,
+      signal,
+    ),
+    fetchJson<EspnRoster>(
+      `https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/teams/${team.id}/roster`,
+      signal,
+    ),
+  ])
+
+  if (detailsResult.status === 'rejected' && rosterResult.status === 'rejected') {
+    const message =
+      detailsResult.reason instanceof Error ? detailsResult.reason.message : 'Team profile source failed.'
+    return buildTeamProfileFallback(team, matches, message)
+  }
+
+  const details = detailsResult.status === 'fulfilled' ? detailsResult.value.team : undefined
+  const roster = rosterResult.status === 'fulfilled' ? rosterResult.value : undefined
+  const profileTeam: Team = {
+    ...team,
+    id: details?.id ?? team.id,
+    name: details?.displayName ?? team.name,
+    shortName: details?.shortDisplayName ?? team.shortName,
+    code: details?.abbreviation ?? team.code,
+    logo: details?.logos?.[0]?.href ?? team.logo,
+    color: details?.color ?? team.color,
+    links: uniqueLinks([...(team.links ?? []), ...espnLinksToExternal(details?.links)]),
+  }
+  const rosterPlayers = roster?.athletes?.map(parsePlayer).filter(Boolean) as TeamPlayer[] | undefined
+  const players = rosterPlayers ?? []
+  const staff = parseStaff(roster)
+  const nextEvent = parseNextEvent(details, profileTeam, matches)
+  const updates: TeamUpdate[] = []
+
+  if (nextEvent) {
+    updates.push({
+      id: 'next-event',
+      label: 'Next match',
+      detail: [nextEvent.name, nextEvent.status].filter(Boolean).join(' - '),
+    })
+  }
+
+  if (roster?.timestamp) {
+    updates.push({
+      id: 'roster-timestamp',
+      label: 'Roster feed',
+      detail: `Roster snapshot published ${roster.timestamp}`,
+    })
+  }
+
+  if (staff.length) {
+    updates.push({
+      id: 'staff-feed',
+      label: 'Staff feed',
+      detail: `${staff.length} staff ${staff.length === 1 ? 'member' : 'members'} listed by the roster source`,
+    })
+  }
+
+  const sourceDetail =
+    detailsResult.status === 'fulfilled' && rosterResult.status === 'fulfilled'
+      ? `${players.length} players and team profile loaded`
+      : detailsResult.status === 'fulfilled'
+        ? 'Team profile loaded; roster feed is not available right now'
+        : `${players.length} roster players loaded; team profile is not available right now`
+
+  return {
+    source: profileSource(players.length || details ? 'online' : 'degraded', sourceDetail),
+    team: profileTeam,
+    record: parseRecord(details),
+    standingSummary: details?.standingSummary,
+    nextEvent,
+    roster: players,
+    staff,
+    injuries: players.filter((player) => player.injuries.length),
+    updates,
+    links: profileTeam.links ?? [],
+    rosterUpdatedAt: roster?.timestamp,
+  }
 }
 
 export async function loadMatchExtras(match: Match, signal?: AbortSignal): Promise<MatchExtras> {
