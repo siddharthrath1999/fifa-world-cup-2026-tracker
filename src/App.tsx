@@ -958,7 +958,7 @@ function TeamProfilePanel({
             <ol className="update-list">
               {updates.map((update) => (
                 <li key={update.id}>
-                  <strong>{update.label}:</strong>
+                  <strong>{update.label}: </strong>
                   <span>{update.detail}</span>
                 </li>
               ))}
