@@ -23,6 +23,7 @@ import {
   Trophy,
   Tv,
   Users,
+  X,
 } from 'lucide-react'
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
@@ -333,6 +334,14 @@ function Score({ match }: { match: Match }) {
   )
 }
 
+function teamAccent(team: Team, fallback: string) {
+  return `#${team.color ?? fallback}`
+}
+
+function matchStageLabel(match: Match) {
+  return match.group ?? match.stage
+}
+
 function MatchRow({
   match,
   selected,
@@ -348,10 +357,25 @@ function MatchRow({
   onFavorite: (id: string) => void
   onTeamSelect: (team: Team) => void
 }) {
+  const kickoffDistance = match.status.state === 'scheduled' ? getKickoffDistance(match.dateUtc) : match.status.label
+  const matchStyle = {
+    '--home-color': teamAccent(match.home, '0b7a59'),
+    '--away-color': teamAccent(match.away, '235a8b'),
+  } as React.CSSProperties
+
   return (
-    <article className={`match-row ${selected ? 'selected' : ''}`} data-match-id={match.id} onClick={() => onSelect(match.id)}>
+    <article
+      className={`match-row ${statusTone(match.status.state)} ${selected ? 'selected' : ''}`}
+      data-match-id={match.id}
+      style={matchStyle}
+      onClick={() => onSelect(match.id)}
+    >
+      <div className="match-card-head">
+        <span className="match-number">M{match.matchNumber}</span>
+        <span className={`status-pill ${statusTone(match.status.state)}`}>{match.status.phase ?? match.status.label}</span>
+        <span className="match-kickoff">{kickoffDistance}</span>
+      </div>
       <div className="match-row-main">
-        <div className="match-number">M{match.matchNumber}</div>
         <div className="match-teams">
           <TeamName team={match.home} onTeamSelect={onTeamSelect} />
           <Score match={match} />
@@ -359,7 +383,6 @@ function MatchRow({
         </div>
       </div>
       <div className="match-row-meta">
-        <span className={`status-pill ${statusTone(match.status.state)}`}>{match.status.label}</span>
         <span>
           <Clock size={14} />
           {formatIstDateTime(match.dateUtc)}
@@ -368,7 +391,7 @@ function MatchRow({
           <MapPin size={14} />
           {match.venue.city}
         </span>
-        <span>{match.group ?? match.stage}</span>
+        <span>{matchStageLabel(match)}</span>
       </div>
       <button
         className={`icon-button heart ${favorite ? 'active' : ''}`}
@@ -469,6 +492,117 @@ function WatchPanel() {
         <Shield size={16} />
         Unofficial streams are not listed. They are often unsafe, unreliable, and can violate broadcast rights.
       </div>
+    </section>
+  )
+}
+
+type LineupPlayer = MatchExtras['lineups'][number]['players'][number]
+
+function playerPitchBand(player: LineupPlayer) {
+  const position = (player.position ?? '').toLowerCase()
+  if (/goal|gk|keeper|^g$/.test(position)) return 'Goalkeeper'
+  if (/def|back|^d$|^cb$|^lb$|^rb$/.test(position)) return 'Defenders'
+  if (/mid|^m$|^cm$|^dm$|^am$/.test(position)) return 'Midfielders'
+  if (/for|fw|att|striker|wing|^f$|^st$/.test(position)) return 'Forwards'
+  return 'Squad'
+}
+
+function getPitchRows(players: LineupPlayer[]) {
+  const starters = players.filter((player) => player.starter !== false)
+  const source = starters.length ? starters : players.slice(0, 11)
+  const order = ['Goalkeeper', 'Defenders', 'Midfielders', 'Forwards', 'Squad']
+  const rows = source.reduce<Map<string, LineupPlayer[]>>((map, player) => {
+    const band = playerPitchBand(player)
+    map.set(band, [...(map.get(band) ?? []), player])
+    return map
+  }, new Map())
+
+  return order.map((band) => [band, rows.get(band) ?? []] as const).filter(([, row]) => row.length)
+}
+
+function findLineupForTeam(lineups: MatchExtras['lineups'], team: Team) {
+  return lineups.find((lineup) => lineup.team.id === team.id || lineup.team.code === team.code)
+}
+
+function PitchLineup({ lineup, side }: { lineup: MatchExtras['lineups'][number]; side: 'home' | 'away' }) {
+  const rows = getPitchRows(lineup.players)
+  const substitutes = lineup.players.filter((player) => player.starter === false)
+
+  return (
+    <div className={`pitch-team ${side}`}>
+      <div className="pitch-team-label">
+        <TeamMark team={lineup.team} size="sm" />
+        <strong>{lineup.team.shortName}</strong>
+        {lineup.formation ? <small>{lineup.formation}</small> : null}
+      </div>
+      <div className="pitch-lines">
+        {rows.map(([band, players]) => (
+          <div className="pitch-line" key={`${lineup.team.id}-${band}`}>
+            {players.map((player) => (
+              <span className="pitch-player" key={`${lineup.team.id}-${player.id}-${band}`}>
+                <b>{player.shirt ?? player.position ?? '-'}</b>
+                <small>{player.name}</small>
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+      {substitutes.length ? (
+        <div className="bench-strip">
+          <span>Bench</span>
+          <strong>{substitutes.slice(0, 6).map((player) => player.name).join(', ')}</strong>
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
+function TacticalPitch({
+  match,
+  lineups,
+  loading,
+}: {
+  match: Match
+  lineups: MatchExtras['lineups']
+  loading: boolean
+}) {
+  const homeLineup = findLineupForTeam(lineups, match.home)
+  const awayLineup = findLineupForTeam(lineups, match.away)
+  const hasLineups = Boolean(homeLineup || awayLineup)
+
+  return (
+    <section className="detail-block tactical-panel">
+      <div className="block-title">
+        <Users size={18} />
+        <h3>Tactical pitch</h3>
+      </div>
+      <div className={`pitch-board ${hasLineups ? 'with-lineups' : 'pending'}`}>
+        <div className="pitch-surface">
+          <span className="pitch-halfway" />
+          <span className="pitch-centre" />
+          {hasLineups ? (
+            <>
+              {homeLineup ? <PitchLineup lineup={homeLineup} side="home" /> : null}
+              {awayLineup ? <PitchLineup lineup={awayLineup} side="away" /> : null}
+            </>
+          ) : (
+            <div className="pitch-pending">
+              <div>
+                <TeamMark team={match.home} size="lg" />
+                <strong>{match.home.shortName}</strong>
+              </div>
+              <span>{loading ? 'Checking lineup feed' : 'Official XI pending'}</span>
+              <div>
+                <TeamMark team={match.away} size="lg" />
+                <strong>{match.away.shortName}</strong>
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+      <p className="pitch-note">
+        Player positions appear only when the connected live match feed publishes lineups. No projected XI is guessed.
+      </p>
     </section>
   )
 }
@@ -858,8 +992,9 @@ function DetailView({
         items={timeline}
         unavailable="No timeline events have been published for this match yet."
       />
+      <TacticalPitch match={match} lineups={extras.lineups} loading={extrasLoading} />
       <AvailabilityPanel
-        title="Line-ups"
+        title="Line-up list"
         icon={<Users size={18} />}
         items={lineups}
         unavailable="Line-ups are not available yet. They usually appear close to kickoff."
@@ -1274,18 +1409,21 @@ function ProfilePhoto({
   )
 }
 
-function PlayerCard({ player }: { player: TeamPlayer }) {
+function PlayerCard({ player, onSelect }: { player: TeamPlayer; onSelect: (player: TeamPlayer) => void }) {
   const photoSource = player.links.find((link) => link.type === 'image-source')
   return (
     <article className="player-card">
-      <ProfilePhoto src={player.headshot} fallback={playerInitials(player.name)} className="profile-photo player-photo" />
-      <div>
-        <strong>{player.jersey ? `#${player.jersey} ${player.name}` : player.name}</strong>
-        <span>
-          {[player.position, player.age ? `${player.age} yrs` : undefined, player.status].filter(Boolean).join(' - ') ||
-            'Squad details pending'}
-        </span>
-      </div>
+      <button className="player-card-main" type="button" onClick={() => onSelect(player)}>
+        <ProfilePhoto src={player.headshot} fallback={playerInitials(player.name)} className="profile-photo player-photo" />
+        <div>
+          <strong>{player.jersey ? `#${player.jersey} ${player.name}` : player.name}</strong>
+          <span>
+            {[player.position, player.age ? `${player.age} yrs` : undefined, player.status].filter(Boolean).join(' - ') ||
+              'Squad details pending'}
+          </span>
+        </div>
+        <ChevronRight size={15} />
+      </button>
       {photoSource ? (
         <a
           className="photo-source-link"
@@ -1300,6 +1438,113 @@ function PlayerCard({ player }: { player: TeamPlayer }) {
       ) : null}
       {player.injuries.length ? <small>Injury note</small> : null}
     </article>
+  )
+}
+
+function PlayerSpotlight({
+  player,
+  team,
+  onClose,
+}: {
+  player: TeamPlayer
+  team: Team
+  onClose: () => void
+}) {
+  const photoSource = player.links.find((link) => link.type === 'image-source')
+  const publicLinks = player.links.filter((link) => link.type !== 'image-source')
+  const facts = [
+    ['Role', player.position],
+    ['Age', player.age ? `${player.age} yrs` : undefined],
+    ['Height', player.height],
+    ['Weight', player.weight],
+    ['Status', player.status],
+    ['Jersey', player.jersey ? `#${player.jersey}` : undefined],
+  ].filter(([, value]) => value)
+
+  return (
+    <div className="player-sheet-overlay" role="presentation" onClick={onClose}>
+      <section
+        className="player-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label={`${player.name} player profile`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button className="icon-button sheet-close" type="button" onClick={onClose} aria-label="Close player profile">
+          <X size={18} />
+        </button>
+        <div className="player-sheet-hero" style={{ '--team-accent': teamAccent(team, '0b7a59') } as React.CSSProperties}>
+          <ProfilePhoto src={player.headshot} fallback={playerInitials(player.name)} className="profile-photo spotlight-photo" />
+          <div>
+            <span>{team.name}</span>
+            <h2>{player.name}</h2>
+            <p>{[player.position, player.jersey ? `#${player.jersey}` : undefined].filter(Boolean).join(' - ') || 'Squad member'}</p>
+          </div>
+        </div>
+        <div className="player-fact-grid">
+          {facts.length ? (
+            facts.map(([label, value]) => (
+              <div key={label}>
+                <span>{label}</span>
+                <strong>{value}</strong>
+              </div>
+            ))
+          ) : (
+            <div>
+              <span>Profile</span>
+              <strong>Details pending</strong>
+            </div>
+          )}
+        </div>
+        <section className="player-sheet-block">
+          <div className="block-title">
+            <AlertTriangle size={18} />
+            <h3>Availability</h3>
+          </div>
+          {player.injuries.length ? (
+            <div className="injury-list">
+              {player.injuries.map((injury) => (
+                <span key={injury}>
+                  <strong>{injury}</strong>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>No injury note is published for this player in the connected roster feed.</span>
+            </div>
+          )}
+        </section>
+        <section className="player-sheet-block">
+          <div className="block-title">
+            <ExternalLink size={18} />
+            <h3>Profile links</h3>
+          </div>
+          {publicLinks.length || photoSource ? (
+            <div className="link-list">
+              {publicLinks.slice(0, 4).map((link) => (
+                <a href={link.href} target="_blank" rel="noreferrer" key={link.href}>
+                  {link.label}
+                  <ExternalLink size={14} />
+                </a>
+              ))}
+              {photoSource ? (
+                <a href={photoSource.href} target="_blank" rel="noreferrer">
+                  {photoSource.label}
+                  <ExternalLink size={14} />
+                </a>
+              ) : null}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>No public player links are published by the connected feed yet.</span>
+            </div>
+          )}
+        </section>
+      </section>
+    </div>
   )
 }
 
@@ -1362,6 +1607,8 @@ function TeamProfilePanel({
     detail: loading ? 'Loading team profile...' : 'Select a nation to load team details.',
   } satisfies SourceState
   const profileTeam = activeProfile?.team ?? team
+  const [spotlight, setSpotlight] = useState<{ teamCode: string; player: TeamPlayer } | null>(null)
+  const spotlightPlayer = spotlight?.teamCode === profileTeam.code ? spotlight.player : null
 
   return (
     <section className="team-profile">
@@ -1422,7 +1669,11 @@ function TeamProfilePanel({
                   <h4>{position}</h4>
                   <div className="player-grid">
                     {players.map((player) => (
-                      <PlayerCard player={player} key={player.id} />
+                      <PlayerCard
+                        player={player}
+                        key={player.id}
+                        onSelect={(selectedPlayer) => setSpotlight({ teamCode: profileTeam.code, player: selectedPlayer })}
+                      />
                     ))}
                   </div>
                 </div>
@@ -1578,6 +1829,7 @@ function TeamProfilePanel({
           )}
         </section>
       </div>
+      {spotlightPlayer ? <PlayerSpotlight player={spotlightPlayer} team={profileTeam} onClose={() => setSpotlight(null)} /> : null}
     </section>
   )
 }
