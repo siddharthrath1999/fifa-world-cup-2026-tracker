@@ -15,6 +15,7 @@ import type {
   TournamentStats,
   TournamentTeamStat,
   Venue,
+  VenueIntel,
   WorldCupData,
 } from '../types'
 
@@ -71,8 +72,15 @@ type FifaMatch = {
   Stadium?: {
     IdStadium?: string
     Name?: Localized[]
+    Capacity?: number | null
+    WebAddress?: string | null
+    Roof?: boolean | null
+    Turf?: string | null
     CityName?: Localized[]
     IdCountry?: string
+    Latitude?: number | null
+    Longitude?: number | null
+    Street?: string | null
   }
   Officials?: {
     NameShort?: Localized[]
@@ -301,6 +309,19 @@ async function fetchJson<T>(url: string, signal?: AbortSignal): Promise<T> {
   return response.json() as Promise<T>
 }
 
+async function fetchJsonWithTimeout<T>(url: string, signal?: AbortSignal, timeoutMs = 8_000): Promise<T> {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs)
+  const abortFromParent = () => controller.abort()
+  signal?.addEventListener('abort', abortFromParent, { once: true })
+  try {
+    return await fetchJson<T>(url, controller.signal)
+  } finally {
+    window.clearTimeout(timeout)
+    signal?.removeEventListener('abort', abortFromParent)
+  }
+}
+
 function label(value?: Localized[]) {
   return value?.find((item) => item.Description)?.Description ?? value?.[0]?.Description ?? ''
 }
@@ -324,6 +345,13 @@ function normalizeVenue(stadium: FifaMatch['Stadium']): Venue {
     name: label(stadium?.Name) || 'Venue to be confirmed',
     city: label(stadium?.CityName) || 'City to be confirmed',
     country: stadium?.IdCountry ?? 'TBD',
+    latitude: stadium?.Latitude,
+    longitude: stadium?.Longitude,
+    capacity: stadium?.Capacity,
+    roof: stadium?.Roof,
+    turf: stadium?.Turf,
+    address: stadium?.Street,
+    webAddress: stadium?.WebAddress,
   }
 }
 
@@ -685,6 +713,226 @@ function summarySource(status: SourceState['status'], detail: string): SourceSta
     status,
     detail,
     href: 'https://site.api.espn.com',
+  }
+}
+
+type OpenMeteoGeocode = {
+  results?: {
+    name?: string
+    latitude?: number
+    longitude?: number
+    country_code?: string
+    country?: string
+    admin1?: string
+    timezone?: string
+  }[]
+}
+
+type OpenMeteoWeather = {
+  timezone?: string
+  current?: {
+    time?: string
+    temperature_2m?: number
+    weather_code?: number
+    wind_speed_10m?: number
+  }
+}
+
+const openMeteoCountryCodes: Record<string, string> = {
+  USA: 'US',
+  CAN: 'CA',
+  MEX: 'MX',
+}
+
+function weatherCodeLabel(code?: number) {
+  if (code === undefined) return undefined
+  if (code === 0) return 'Clear'
+  if ([1, 2, 3].includes(code)) return 'Cloud cover'
+  if ([45, 48].includes(code)) return 'Fog'
+  if ([51, 53, 55, 56, 57].includes(code)) return 'Drizzle'
+  if ([61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return 'Rain'
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return 'Snow'
+  if ([95, 96, 99].includes(code)) return 'Thunderstorm'
+  return `Weather code ${code}`
+}
+
+function pickGeocodeResult(venue: Venue, results: NonNullable<OpenMeteoGeocode['results']>) {
+  const expectedCountry = openMeteoCountryCodes[venue.country] ?? venue.country
+  return (
+    results.find((result) => result.country_code === expectedCountry) ??
+    results.find((result) => result.country_code) ??
+    results[0]
+  )
+}
+
+function venueLookupQuery(venue: Venue) {
+  const label = `${venue.name} ${venue.city}`
+  if (/arlington/i.test(label)) return 'Arlington'
+  if (/inglewood/i.test(label)) return 'Inglewood'
+  if (/east rutherford|new york\/new jersey|new jersey/i.test(label)) return 'East Rutherford'
+  if (/foxborough/i.test(label)) return 'Foxborough'
+  if (/vancouver/i.test(label)) return 'Vancouver'
+  if (/houston/i.test(label)) return 'Houston'
+  if (/philadelphia/i.test(label)) return 'Philadelphia'
+  if (/seattle/i.test(label)) return 'Seattle'
+  if (/kansas city/i.test(label)) return 'Kansas City'
+  if (/mexico city/i.test(label)) return 'Mexico City'
+  if (/guadalajara/i.test(label)) return 'Guadalajara'
+  if (/toronto/i.test(label)) return 'Toronto'
+  if (/atlanta/i.test(label)) return 'Atlanta'
+  if (/miami gardens/i.test(label)) return 'Miami Gardens'
+  if (/\bmiami\b/i.test(label)) return 'Miami'
+  if (/santa clara|san francisco bay area/i.test(label)) return 'Santa Clara'
+  if (/guadalupe/i.test(label)) return 'Guadalupe'
+  if (/monterrey/i.test(label)) return 'Monterrey'
+  return venue.city
+}
+
+const hostCityCoordinateFallbacks: Record<string, { latitude: number; longitude: number; placeLabel: string }> = {
+  'Mexico City': { latitude: 19.42847, longitude: -99.12766, placeLabel: 'Mexico City, Mexico' },
+  Guadalajara: { latitude: 20.67738, longitude: -103.34749, placeLabel: 'Guadalajara, Jalisco, Mexico' },
+  Toronto: { latitude: 43.70643, longitude: -79.39864, placeLabel: 'Toronto, Ontario, Canada' },
+  'Los Angeles': { latitude: 34.05223, longitude: -118.24368, placeLabel: 'Los Angeles, California, United States' },
+  Arlington: { latitude: 32.73569, longitude: -97.10807, placeLabel: 'Arlington, Texas, United States' },
+  Inglewood: { latitude: 33.96168, longitude: -118.35313, placeLabel: 'Inglewood, California, United States' },
+  'Santa Clara': { latitude: 37.35411, longitude: -121.95524, placeLabel: 'Santa Clara, California, United States' },
+  'East Rutherford': { latitude: 40.83399, longitude: -74.09709, placeLabel: 'East Rutherford, New Jersey, United States' },
+  Boston: { latitude: 42.35843, longitude: -71.05977, placeLabel: 'Boston, Massachusetts, United States' },
+  Foxborough: { latitude: 42.06538, longitude: -71.24783, placeLabel: 'Foxborough, Massachusetts, United States' },
+  Vancouver: { latitude: 49.24966, longitude: -123.11934, placeLabel: 'Vancouver, British Columbia, Canada' },
+  Houston: { latitude: 29.76328, longitude: -95.36327, placeLabel: 'Houston, Texas, United States' },
+  Dallas: { latitude: 32.78306, longitude: -96.80667, placeLabel: 'Dallas, Texas, United States' },
+  Philadelphia: { latitude: 39.95238, longitude: -75.16362, placeLabel: 'Philadelphia, Pennsylvania, United States' },
+  Monterrey: { latitude: 25.68435, longitude: -100.31721, placeLabel: 'Monterrey, Nuevo Leon, Mexico' },
+  Guadalupe: { latitude: 25.67678, longitude: -100.25646, placeLabel: 'Guadalupe, Nuevo Leon, Mexico' },
+  Atlanta: { latitude: 33.749, longitude: -84.38798, placeLabel: 'Atlanta, Georgia, United States' },
+  Seattle: { latitude: 47.60621, longitude: -122.33207, placeLabel: 'Seattle, Washington, United States' },
+  Miami: { latitude: 25.77427, longitude: -80.19366, placeLabel: 'Miami, Florida, United States' },
+  'Miami Gardens': { latitude: 25.94204, longitude: -80.2456, placeLabel: 'Miami Gardens, Florida, United States' },
+  'Kansas City': { latitude: 39.09973, longitude: -94.57857, placeLabel: 'Kansas City, Missouri, United States' },
+}
+
+async function loadOneVenueIntel(venue: Venue, signal?: AbortSignal): Promise<VenueIntel['records'][number]> {
+  const scheduleLatitude = venue.latitude ?? undefined
+  const scheduleLongitude = venue.longitude ?? undefined
+  let latitude = scheduleLatitude
+  let longitude = scheduleLongitude
+  let timezone: string | undefined
+  let placeLabel: string | undefined
+  const lookupQuery = venueLookupQuery(venue)
+
+  if (latitude === undefined || longitude === undefined) {
+    try {
+      const params = new URLSearchParams({
+        name: lookupQuery,
+        count: '5',
+        language: 'en',
+        format: 'json',
+      })
+      const geocode = await fetchJsonWithTimeout<OpenMeteoGeocode>(
+        `https://geocoding-api.open-meteo.com/v1/search?${params.toString()}`,
+        signal,
+      )
+      const result = pickGeocodeResult(venue, geocode.results ?? [])
+      latitude = result?.latitude
+      longitude = result?.longitude
+      timezone = result?.timezone
+      placeLabel = [result?.name, result?.admin1, result?.country].filter(Boolean).join(', ')
+    } catch {
+      const fallback = hostCityCoordinateFallbacks[lookupQuery]
+      latitude = fallback?.latitude
+      longitude = fallback?.longitude
+      placeLabel = fallback?.placeLabel
+    }
+  }
+
+  if ((latitude === undefined || longitude === undefined) && hostCityCoordinateFallbacks[lookupQuery]) {
+    const fallback = hostCityCoordinateFallbacks[lookupQuery]
+    latitude = fallback.latitude
+    longitude = fallback.longitude
+    placeLabel = placeLabel || fallback.placeLabel
+  }
+
+  if (latitude === undefined || longitude === undefined) {
+    return {
+      venueId: venue.id,
+      detail: 'Coordinate lookup unavailable from free geocoding feed.',
+    }
+  }
+
+  let weather: OpenMeteoWeather | undefined
+  try {
+    const weatherParams = new URLSearchParams({
+      latitude: String(latitude),
+      longitude: String(longitude),
+      current: 'temperature_2m,weather_code,wind_speed_10m',
+      timezone: 'auto',
+    })
+    weather = await fetchJsonWithTimeout<OpenMeteoWeather>(
+      `https://api.open-meteo.com/v1/forecast?${weatherParams.toString()}`,
+      signal,
+    )
+  } catch {
+    weather = undefined
+  }
+  const currentWeather = weather?.current
+  const weatherCode = currentWeather?.weather_code
+
+  return {
+    venueId: venue.id,
+    latitude,
+    longitude,
+    timezone: weather?.timezone ?? timezone,
+    placeLabel,
+    weather: currentWeather
+      ? {
+          temperatureC: currentWeather.temperature_2m,
+          windKph: currentWeather.wind_speed_10m,
+          code: weatherCode,
+          label: weatherCodeLabel(weatherCode),
+          observedAt: currentWeather.time,
+        }
+      : undefined,
+    detail: weather?.current ? 'Live weather connected from Open-Meteo.' : 'Coordinate connected; weather feed unavailable.',
+  }
+}
+
+export async function loadVenueIntel(venues: Venue[], signal?: AbortSignal): Promise<VenueIntel> {
+  const uniqueVenues = [...new Map(venues.map((venue) => [venue.id, venue])).values()]
+  const records: VenueIntel['records'] = new Array(uniqueVenues.length)
+  let nextIndex = 0
+
+  async function worker() {
+    while (nextIndex < uniqueVenues.length) {
+      const index = nextIndex
+      nextIndex += 1
+      const venue = uniqueVenues[index]
+      if (signal?.aborted) throw new DOMException('Aborted', 'AbortError')
+      try {
+        records[index] = await loadOneVenueIntel(venue, signal)
+      } catch (error) {
+        records[index] = {
+          venueId: venue.id,
+          detail: error instanceof Error ? error.message : 'Venue enrichment failed.',
+        }
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(4, uniqueVenues.length) }, () => worker()))
+  const connected = records.filter((record) => record.latitude !== undefined && record.longitude !== undefined).length
+  return {
+    source: {
+      id: 'open-meteo-venues',
+      label: 'Venue weather',
+      status: connected ? (connected === uniqueVenues.length ? 'online' : 'degraded') : 'offline',
+      detail: connected
+        ? `${connected}/${uniqueVenues.length} venue locations enriched`
+        : 'Venue coordinate and weather enrichment unavailable',
+      href: 'https://open-meteo.com/',
+    },
+    records,
+    updatedAt: new Date().toISOString(),
   }
 }
 

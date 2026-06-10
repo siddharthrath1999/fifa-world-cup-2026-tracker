@@ -25,6 +25,13 @@ export type Venue = {
   name: string
   city: string
   country: string
+  latitude?: number | null
+  longitude?: number | null
+  capacity?: number | null
+  roof?: boolean | null
+  turf?: string | null
+  address?: string | null
+  webAddress?: string | null
 }
 
 export type ExternalLink = {
@@ -235,4 +242,24 @@ export type WorldCupData = {
   matches: Match[]
   sourceStates: SourceState[]
   updatedAt: string
+}
+
+export type VenueIntel = {
+  source: SourceState
+  updatedAt: string
+  records: {
+    venueId: string
+    latitude?: number
+    longitude?: number
+    timezone?: string
+    placeLabel?: string
+    weather?: {
+      temperatureC?: number
+      windKph?: number
+      code?: number
+      label?: string
+      observedAt?: string
+    }
+    detail?: string
+  }[]
 }

@@ -28,11 +28,12 @@ import {
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { downloadCalendar } from './lib/calendar'
-import { loadMatchExtras, loadTeamProfile, loadTournamentStats, loadWorldCupData, watchSources } from './lib/sources'
+import { loadMatchExtras, loadTeamProfile, loadTournamentStats, loadVenueIntel, loadWorldCupData, watchSources } from './lib/sources'
 import { buildStandings, getBestThirds } from './lib/standings'
 import { formatIstDateKey, formatIstDateTime, formatIstDay, getKickoffDistance, getTodayIstKey } from './lib/time'
 import type {
   GroupStanding,
+  LiveEvent,
   Match,
   MatchExtras,
   SourceState,
@@ -42,6 +43,7 @@ import type {
   TeamProfile,
   TournamentStats,
   Venue,
+  VenueIntel,
   WorldCupData,
 } from './types'
 
@@ -130,6 +132,18 @@ const blankTournamentStats: TournamentStats = {
   updatedAt: new Date(0).toISOString(),
 }
 
+const blankVenueIntel: VenueIntel = {
+  source: {
+    id: 'open-meteo-venues',
+    label: 'Venue weather',
+    status: 'degraded',
+    detail: 'Waiting for venue enrichment.',
+    href: 'https://open-meteo.com/',
+  },
+  records: [],
+  updatedAt: new Date(0).toISOString(),
+}
+
 const WORLD_CUP_2026_LOGO_URL =
   'https://upload.wikimedia.org/wikipedia/en/thumb/1/17/2026_FIFA_World_Cup_emblem.svg/250px-2026_FIFA_World_Cup_emblem.svg.png'
 
@@ -157,6 +171,14 @@ function sourceTone(status: SourceState['status']) {
   if (status === 'online') return 'good'
   if (status === 'degraded') return 'warn'
   return 'bad'
+}
+
+function formatRefreshTime(value?: string) {
+  if (!value) return '-'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '-'
+  if (date.getTime() === 0) return '-'
+  return date.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Kolkata' })
 }
 
 function statusTone(status: Match['status']['state']) {
@@ -408,36 +430,78 @@ function MatchRow({
   )
 }
 
-function SourceHealth({ sources }: { sources: SourceState[] }) {
-  return (
-    <section className="source-strip" aria-label="Live data sources">
-      {sources.map((source) => {
-        const content = (
-          <>
-            <span className="source-dot" />
-            <strong>{source.label}</strong>
-            <small>{source.detail}</small>
-            <ExternalLink className="source-link-icon" size={14} aria-hidden="true" />
-          </>
-        )
+function SourceHealth({
+  sources,
+  updatedAt,
+  venueIntel,
+}: {
+  sources: SourceState[]
+  updatedAt?: string
+  venueIntel: VenueIntel
+}) {
+  const allSources = venueIntel.records.length ? [...sources, venueIntel.source] : sources
+  const online = allSources.filter((source) => source.status === 'online').length
+  const degraded = allSources.filter((source) => source.status === 'degraded').length
+  const offline = allSources.filter((source) => source.status === 'offline').length
+  const enrichedVenues = venueIntel.records.filter((record) => record.latitude !== undefined && record.longitude !== undefined).length
 
-        return source.href ? (
-          <a
-            className={`source-chip ${sourceTone(source.status)}`}
-            href={source.href}
-            target="_blank"
-            rel="noreferrer"
-            key={source.id}
-            aria-label={`Open ${source.label}`}
-          >
-            {content}
-          </a>
-        ) : (
-          <article className={`source-chip ${sourceTone(source.status)}`} key={source.id}>
-            {content}
-          </article>
-        )
-      })}
+  return (
+    <section className="source-dashboard" aria-label="Live data sources">
+      <div className="source-dashboard-head">
+        <div>
+          <span>Source health</span>
+          <strong>{online}/{allSources.length || 0} online</strong>
+        </div>
+        <div className="source-dashboard-metrics">
+          <span className="good">{online} online</span>
+          <span className="warn">{degraded} degraded</span>
+          <span className="bad">{offline} offline</span>
+          <span>{formatRefreshTime(updatedAt)} IST</span>
+        </div>
+      </div>
+      <div className="source-strip">
+        {allSources.map((source) => {
+          const content = (
+            <>
+              <span className="source-dot" />
+              <strong>{source.label}</strong>
+              <small>{source.detail}</small>
+              <ExternalLink className="source-link-icon" size={14} aria-hidden="true" />
+            </>
+          )
+
+          return source.href ? (
+            <a
+              className={`source-chip ${sourceTone(source.status)}`}
+              href={source.href}
+              target="_blank"
+              rel="noreferrer"
+              key={source.id}
+              aria-label={`Open ${source.label}`}
+            >
+              {content}
+            </a>
+          ) : (
+            <article className={`source-chip ${sourceTone(source.status)}`} key={source.id}>
+              {content}
+            </article>
+          )
+        })}
+      </div>
+      <div className="source-provenance">
+        <span>
+          <MapPin size={14} />
+          {enrichedVenues}/{venueIntel.records.length || 0} venues enriched
+        </span>
+        <span>
+          <Shield size={14} />
+          No unofficial stream sources
+        </span>
+        <span>
+          <RefreshCw size={14} />
+          App refreshes every 60 seconds
+        </span>
+      </div>
     </section>
   )
 }
@@ -603,6 +667,84 @@ function TacticalPitch({
       <p className="pitch-note">
         Player positions appear only when the connected live match feed publishes lineups. No projected XI is guessed.
       </p>
+    </section>
+  )
+}
+
+function eventMinutePercent(minute?: string) {
+  if (!minute) return 0
+  const value = Number(minute.match(/\d+/)?.[0] ?? 0)
+  if (!value) return 0
+  return Math.max(0, Math.min(100, (value / 120) * 100))
+}
+
+function eventTone(event: LiveEvent) {
+  const text = `${event.type} ${event.text}`.toLowerCase()
+  if (text.includes('goal')) return 'goal'
+  if (text.includes('yellow') || text.includes('red') || text.includes('card')) return 'card'
+  if (text.includes('substitution') || text.includes('sub')) return 'sub'
+  if (text.includes('var') || text.includes('penalty')) return 'review'
+  return 'event'
+}
+
+function MatchMomentum({
+  match,
+  events,
+  loading,
+}: {
+  match: Match
+  events: LiveEvent[]
+  loading: boolean
+}) {
+  const markers = events.slice(0, 18)
+  const hasEvents = markers.length > 0
+  return (
+    <section className="detail-block momentum-panel">
+      <div className="block-title">
+        <Activity size={18} />
+        <h3>Match momentum</h3>
+      </div>
+      <div className={`momentum-rail ${hasEvents ? 'active' : 'pending'}`}>
+        <div className="momentum-teams">
+          <span>{match.home.code}</span>
+          <span>{match.away.code}</span>
+        </div>
+        <div className="momentum-track" aria-label="Match event momentum rail">
+          <span className="momentum-phase start">KO</span>
+          <span className="momentum-phase half">HT</span>
+          <span className="momentum-phase full">FT</span>
+          {hasEvents ? (
+            markers.map((event) => (
+              <span
+                className={`momentum-marker ${eventTone(event)}`}
+                style={{ left: `${eventMinutePercent(event.minute)}%` }}
+                key={event.id}
+                title={`${event.minute ?? ''} ${event.type}: ${event.text}`}
+              >
+                <b>{event.minute ?? '--'}</b>
+              </span>
+            ))
+          ) : (
+            <strong>{loading ? 'Checking event feed' : match.status.state === 'scheduled' ? 'Events pending kickoff' : 'No event feed yet'}</strong>
+          )}
+        </div>
+        <div className="momentum-legend">
+          <span className="goal">Goal</span>
+          <span className="card">Card</span>
+          <span className="sub">Sub</span>
+          <span className="review">VAR / penalty</span>
+        </div>
+      </div>
+      {hasEvents ? (
+        <div className="momentum-latest">
+          {markers.slice(-3).map((event) => (
+            <span key={`latest-${event.id}`}>
+              <strong>{event.minute ?? '--'} {event.type}</strong>
+              {event.athlete || event.team || event.text}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </section>
   )
 }
@@ -986,6 +1128,7 @@ function DetailView({
         {extrasLoading ? 'Checking match detail feed...' : extras.summarySource.detail}
       </div>
 
+      <MatchMomentum match={match} events={extras.events} loading={extrasLoading} />
       <AvailabilityPanel
         title="Live timeline"
         icon={<Activity size={18} />}
@@ -1900,27 +2043,135 @@ function TeamsView({
   )
 }
 
-function VenuesView({ venues, matches }: { venues: ReturnType<typeof getVenues>; matches: Match[] }) {
+function formatWeather(record?: VenueIntel['records'][number]) {
+  if (!record?.weather) return 'Weather pending'
+  return [
+    record.weather.temperatureC !== undefined ? `${Math.round(record.weather.temperatureC)}°C` : undefined,
+    record.weather.label,
+    record.weather.windKph !== undefined ? `${Math.round(record.weather.windKph)} km/h wind` : undefined,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+}
+
+function getVenuePinPosition(record: VenueIntel['records'][number], records: VenueIntel['records']) {
+  const plotted = records.filter((item) => item.latitude !== undefined && item.longitude !== undefined)
+  const lats = plotted.map((item) => item.latitude as number)
+  const lons = plotted.map((item) => item.longitude as number)
+  const minLat = Math.min(...lats)
+  const maxLat = Math.max(...lats)
+  const minLon = Math.min(...lons)
+  const maxLon = Math.max(...lons)
+  const latRange = maxLat - minLat || 1
+  const lonRange = maxLon - minLon || 1
+  const x = (((record.longitude as number) - minLon) / lonRange) * 84 + 8
+  const y = (1 - (((record.latitude as number) - minLat) / latRange)) * 72 + 14
+  return { left: `${x}%`, top: `${y}%` }
+}
+
+function VenuesView({
+  venues,
+  matches,
+  venueIntel,
+  loading,
+}: {
+  venues: ReturnType<typeof getVenues>
+  matches: Match[]
+  venueIntel: VenueIntel
+  loading: boolean
+}) {
+  const intelByVenue = new Map(venueIntel.records.map((record) => [record.venueId, record]))
+  const plottedRecords = venueIntel.records.filter((record) => record.latitude !== undefined && record.longitude !== undefined)
+  const nextVenue = venues.find((venue) => venue.next)
+
   return (
-    <div className="directory-grid venues">
-      {venues.map((venue) => {
-        const finalOrLate = matches
-          .filter((match) => match.venue.id === venue.id)
-          .sort((a, b) => b.matchNumber - a.matchNumber)[0]
-        return (
-          <article className="directory-card" key={venue.id}>
-            <div>
-              <span className="venue-icon">
-                <MapPin size={22} />
+    <div className="venues-view">
+      <section className="venue-map-panel">
+        <div className="venue-map-copy">
+          <span>Host city map</span>
+          <h2>{plottedRecords.length ? `${plottedRecords.length} venues plotted` : 'Venue map loading'}</h2>
+          <p>{loading ? 'Connecting venue coordinates and weather...' : venueIntel.source.detail}</p>
+        </div>
+        <div className="venue-map" aria-label="World Cup host venue map">
+          <span className="map-region canada">Canada</span>
+          <span className="map-region usa">United States</span>
+          <span className="map-region mexico">Mexico</span>
+          {plottedRecords.map((record) => {
+            const venue = venues.find((item) => item.id === record.venueId)
+            if (!venue) return null
+            return (
+              <span
+                className="venue-pin"
+                style={getVenuePinPosition(record, plottedRecords)}
+                title={`${venue.name}, ${venue.city}`}
+                key={record.venueId}
+              >
+                <b>{venue.matches}</b>
               </span>
-              <h3>{venue.name}</h3>
-              <span>{venue.city}, {venue.country}</span>
-            </div>
-            <p>{venue.matches} matches - next {venue.next ? formatIstDateTime(venue.next) : 'TBD'}</p>
-            {finalOrLate ? <small>Latest scheduled: M{finalOrLate.matchNumber}, {finalOrLate.stage}</small> : null}
-          </article>
-        )
-      })}
+            )
+          })}
+        </div>
+        <div className="venue-map-stats">
+          <div>
+            <span>Weather</span>
+            <strong>{venueIntel.source.status}</strong>
+          </div>
+          <div>
+            <span>Next venue</span>
+            <strong>{nextVenue?.city ?? '-'}</strong>
+          </div>
+          <div>
+            <span>Updated</span>
+            <strong>{formatRefreshTime(venueIntel.updatedAt)}</strong>
+          </div>
+        </div>
+      </section>
+
+      <div className="venue-card-grid">
+        {venues.map((venue) => {
+          const finalOrLate = matches
+            .filter((match) => match.venue.id === venue.id)
+            .sort((a, b) => b.matchNumber - a.matchNumber)[0]
+          const record = intelByVenue.get(venue.id)
+          const venueMatches = matches.filter((match) => match.venue.id === venue.id)
+          const nextMatch = sortByKickoff(venueMatches).find(isUpcoming) ?? sortByKickoff(venueMatches)[0]
+
+          return (
+            <article className="venue-card" key={venue.id}>
+              <div className="venue-card-head">
+                <span className="venue-icon">
+                  <MapPin size={22} />
+                </span>
+                <div>
+                  <h3>{venue.name}</h3>
+                  <span>{venue.city}, {venue.country}</span>
+                </div>
+              </div>
+              <div className="venue-card-metrics">
+                <div>
+                  <span>Matches</span>
+                  <strong>{venue.matches}</strong>
+                </div>
+                <div>
+                  <span>Next</span>
+                  <strong>{venue.next ? formatIstDateTime(venue.next) : 'TBD'}</strong>
+                </div>
+              </div>
+              <div className={`venue-weather ${record?.weather ? 'good' : 'warn'}`}>
+                {record?.weather ? <CheckCircle2 size={16} /> : loading ? <RefreshCw size={16} className="spin" /> : <Info size={16} />}
+                <span>{formatWeather(record)}</span>
+              </div>
+              <div className="venue-next-match">
+                <span>Featured fixture</span>
+                <strong>{nextMatch ? `${nextMatch.home.code} vs ${nextMatch.away.code}` : 'TBD'}</strong>
+                <small>{nextMatch ? `${formatIstDateTime(nextMatch.dateUtc)} · M${nextMatch.matchNumber}` : 'No fixture loaded'}</small>
+              </div>
+              {record?.placeLabel ? <small>{record.placeLabel}</small> : record?.detail ? <small>{record.detail}</small> : null}
+              {finalOrLate ? <small>Latest scheduled: M{finalOrLate.matchNumber}, {finalOrLate.stage}</small> : null}
+            </article>
+          )
+        })}
+      </div>
     </div>
   )
 }
@@ -1942,6 +2193,8 @@ function App() {
   const [extrasLoading, setExtrasLoading] = useState(false)
   const [tournamentStats, setTournamentStats] = useState<TournamentStats>(blankTournamentStats)
   const [statsLoading, setStatsLoading] = useState(false)
+  const [venueIntel, setVenueIntel] = useState<VenueIntel>(blankVenueIntel)
+  const [venueIntelLoading, setVenueIntelLoading] = useState(false)
   const [teamProfile, setTeamProfile] = useState<TeamProfile | null>(null)
   const [teamProfileLoading, setTeamProfileLoading] = useState(false)
   const [shareStatus, setShareStatus] = useState<ShareStatus>({ state: 'idle' })
@@ -1987,6 +2240,7 @@ function App() {
   const teams = useMemo(() => getTeams(matches), [matches])
   const selectedTeam = teams.find((team) => team.code === selectedTeamCode) ?? null
   const venues = useMemo(() => getVenues(matches), [matches])
+  const venueKey = useMemo(() => venues.map((venue) => venue.id).join('|'), [venues])
   const liveCount = matches.filter((match) => match.status.state === 'live' || match.status.state === 'halftime').length
   const todayKey = getTodayIstKey()
   const viewTabs: { id: ViewMode; icon: typeof Calendar; label: string }[] = [
@@ -2076,6 +2330,26 @@ function App() {
       controller.abort()
     }
   }, [matches])
+
+  useEffect(() => {
+    if (!venues.length) return
+    const controller = new AbortController()
+    let active = true
+    queueMicrotask(() => {
+      if (active) setVenueIntelLoading(true)
+    })
+    loadVenueIntel(venues, controller.signal)
+      .then((nextIntel) => {
+        if (active) setVenueIntel(nextIntel)
+      })
+      .finally(() => {
+        if (active) setVenueIntelLoading(false)
+      })
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [venueKey, venues])
 
   useEffect(() => {
     if (!selectedTeam) return
@@ -2226,7 +2500,7 @@ function App() {
         </div>
       </header>
 
-      <SourceHealth sources={data?.sourceStates ?? []} />
+      <SourceHealth sources={data?.sourceStates ?? []} updatedAt={data?.updatedAt} venueIntel={venueIntel} />
 
       {error ? (
         <section className="error-panel">
@@ -2428,7 +2702,9 @@ function App() {
               onMatchSelect={openMatch}
             />
           ) : null}
-          {view === 'venues' ? <VenuesView venues={venues} matches={matches} /> : null}
+          {view === 'venues' ? (
+            <VenuesView venues={venues} matches={matches} venueIntel={venueIntel} loading={venueIntelLoading} />
+          ) : null}
         </section>
 
         {view === 'matches' ? (
