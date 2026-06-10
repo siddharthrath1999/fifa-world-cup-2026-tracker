@@ -130,7 +130,7 @@ const blankTournamentStats: TournamentStats = {
 }
 
 const WORLD_CUP_2026_LOGO_URL =
-  'https://digitalhub.fifa.com/transform/7189acb1-8453-4a14-8248-70ab7a76f372/FWC-26-Logo-for-Countdown?&io=transform:fill&quality=75'
+  'https://upload.wikimedia.org/wikipedia/en/thumb/1/17/2026_FIFA_World_Cup_emblem.svg/250px-2026_FIFA_World_Cup_emblem.svg.png'
 
 function useLocalFavorites() {
   const [favorites, setFavorites] = useState<string[]>(() => {
