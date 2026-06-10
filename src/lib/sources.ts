@@ -11,6 +11,9 @@ import type {
   TeamProfile,
   TeamStaff,
   TeamUpdate,
+  TournamentPlayerStat,
+  TournamentStats,
+  TournamentTeamStat,
   Venue,
   WorldCupData,
 } from '../types'
@@ -28,6 +31,9 @@ const FIFA_SQUAD_SEASONS = [
 const FIFA_PUBLIC_SCHEDULE_URL = 'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/schedule'
 const FIFA_PUBLIC_TEAMS_URL = 'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/teams'
 const ESPN_PUBLIC_SCOREBOARD_URL = 'https://www.espn.com/soccer/scoreboard/_/league/fifa.world'
+const ESPN_PUBLIC_SCHEDULE_URL = 'https://www.espn.com/soccer/schedule/_/league/fifa.world'
+const FOTMOB_PUBLIC_WORLD_CUP_URL = 'https://www.fotmob.com/leagues/77/overview/world-cup'
+const GOAL_PUBLIC_LIVE_SCORES_URL = 'https://www.goal.com/en-us/live-scores'
 
 type Localized = { Description?: string }
 
@@ -1278,6 +1284,221 @@ export async function loadMatchExtras(match: Match, signal?: AbortSignal): Promi
       headToHead: [],
       broadcasts: [],
     }
+  }
+}
+
+function statNumber(value?: string) {
+  if (!value) return null
+  const normalized = value.replace(/,/g, '')
+  const match = normalized.match(/-?\d+(\.\d+)?/)
+  return match ? Number(match[0]) : null
+}
+
+type MutableTeamStat = TournamentTeamStat & {
+  possessionTotal: number
+  possessionCount: number
+}
+
+function emptyTeamStat(team: Team): MutableTeamStat {
+  return {
+    team,
+    played: 0,
+    won: 0,
+    drawn: 0,
+    lost: 0,
+    goalsFor: 0,
+    goalsAgainst: 0,
+    goalDifference: 0,
+    points: 0,
+    cleanSheets: 0,
+    shots: null,
+    shotsOnTarget: null,
+    possessionAverage: null,
+    possessionTotal: 0,
+    possessionCount: 0,
+  }
+}
+
+function ensureTeamStat(map: Map<string, MutableTeamStat>, team: Team) {
+  const existing = map.get(team.code)
+  if (existing) return existing
+  const row = emptyTeamStat(team)
+  map.set(team.code, row)
+  return row
+}
+
+function addNullableTotal(value: number | null, current: number | null) {
+  if (value === null || Number.isNaN(value)) return current
+  return (current ?? 0) + value
+}
+
+function addMatchResult(row: MutableTeamStat, goalsFor: number, goalsAgainst: number) {
+  row.played += 1
+  row.goalsFor += goalsFor
+  row.goalsAgainst += goalsAgainst
+  row.goalDifference = row.goalsFor - row.goalsAgainst
+  if (goalsAgainst === 0) row.cleanSheets += 1
+  if (goalsFor > goalsAgainst) {
+    row.won += 1
+    row.points += 3
+  } else if (goalsFor === goalsAgainst) {
+    row.drawn += 1
+    row.points += 1
+  } else {
+    row.lost += 1
+  }
+}
+
+function addSummaryTeamStats(row: MutableTeamStat, stats: StatLine[], side: 'home' | 'away') {
+  for (const stat of stats) {
+    const labelText = stat.label.toLowerCase()
+    const value = statNumber(side === 'home' ? stat.home : stat.away)
+    if (value === null) continue
+
+    if (labelText.includes('possession')) {
+      row.possessionTotal += value
+      row.possessionCount += 1
+    } else if (labelText.includes('shot') && labelText.includes('target')) {
+      row.shotsOnTarget = addNullableTotal(value, row.shotsOnTarget)
+    } else if (labelText.includes('shot')) {
+      row.shots = addNullableTotal(value, row.shots)
+    }
+  }
+}
+
+function playerKey(team: string, name: string) {
+  return `${team || 'Team'}:${normalizePersonName(name)}`
+}
+
+function ensurePlayerStat(map: Map<string, TournamentPlayerStat>, name: string, team: string) {
+  const key = playerKey(team, name)
+  const existing = map.get(key)
+  if (existing) return existing
+  const row: TournamentPlayerStat = {
+    id: key,
+    name,
+    team: team || 'Team',
+    goals: 0,
+    assists: 0,
+    yellowCards: 0,
+    redCards: 0,
+    appearances: 0,
+  }
+  map.set(key, row)
+  return row
+}
+
+function addPlayerEvents(summary: EspnSummary | undefined, players: Map<string, TournamentPlayerStat>) {
+  for (const event of summary?.competitions?.[0]?.details ?? []) {
+    const text = `${event.type?.text ?? ''} ${event.type?.abbreviation ?? ''} ${event.text ?? ''}`.toLowerCase()
+    const names = event.athletesInvolved?.map((athlete) => athlete.displayName).filter(Boolean) ?? []
+    const team = event.team?.abbreviation ?? event.team?.displayName ?? 'Team'
+    const primary = names[0]
+    if (!primary) continue
+
+    if (text.includes('goal') && !text.includes('disallowed')) {
+      ensurePlayerStat(players, primary, team).goals += 1
+      const assister = names[1]
+      if (assister) ensurePlayerStat(players, assister, team).assists += 1
+    }
+
+    if (text.includes('yellow')) ensurePlayerStat(players, primary, team).yellowCards += 1
+    if (text.includes('red')) ensurePlayerStat(players, primary, team).redCards += 1
+  }
+}
+
+function addLineupAppearances(lineups: LineupGroup[], players: Map<string, TournamentPlayerStat>) {
+  for (const lineup of lineups) {
+    const seen = new Set<string>()
+    for (const player of lineup.players) {
+      const key = playerKey(lineup.team.code, player.name)
+      if (seen.has(key)) continue
+      seen.add(key)
+      ensurePlayerStat(players, player.name, lineup.team.code).appearances += 1
+    }
+  }
+}
+
+function shouldLoadSummaryForStats(match: Match) {
+  if (!match.espnId) return false
+  if (match.status.state === 'live' || match.status.state === 'halftime' || match.status.state === 'fulltime') return true
+  return new Date(match.dateUtc).getTime() <= Date.now()
+}
+
+export async function loadTournamentStats(matches: Match[], signal?: AbortSignal): Promise<TournamentStats> {
+  const teams = new Map<string, MutableTeamStat>()
+  const players = new Map<string, TournamentPlayerStat>()
+  const matchesForSummaries = matches.filter(shouldLoadSummaryForStats)
+
+  for (const match of matches) {
+    const home = ensureTeamStat(teams, match.home)
+    const away = ensureTeamStat(teams, match.away)
+    const hasScore = match.homeScore !== null && match.awayScore !== null
+    const scoreCounts = hasScore && match.status.state !== 'scheduled'
+    if (scoreCounts) {
+      addMatchResult(home, match.homeScore ?? 0, match.awayScore ?? 0)
+      addMatchResult(away, match.awayScore ?? 0, match.homeScore ?? 0)
+    }
+  }
+
+  const summaryResults = await Promise.allSettled(
+    matchesForSummaries.map(async (match) => {
+      const summary = await fetchJson<EspnSummary>(
+        `https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/summary?event=${match.espnId}`,
+        signal,
+      )
+      return { match, summary }
+    }),
+  )
+
+  const abort = summaryResults.find(
+    (result) => result.status === 'rejected' && result.reason instanceof DOMException && result.reason.name === 'AbortError',
+  )
+  if (abort?.status === 'rejected') throw abort.reason
+
+  let summariesLoaded = 0
+  for (const result of summaryResults) {
+    if (result.status !== 'fulfilled') continue
+    summariesLoaded += 1
+    const { match, summary } = result.value
+    const stats = parseStats(summary)
+    addSummaryTeamStats(ensureTeamStat(teams, match.home), stats, 'home')
+    addSummaryTeamStats(ensureTeamStat(teams, match.away), stats, 'away')
+    addPlayerEvents(summary, players)
+    addLineupAppearances(parseLineups(summary, match), players)
+  }
+
+  const teamRows = [...teams.values()]
+    .map(({ possessionTotal, possessionCount, ...row }) => ({
+      ...row,
+      possessionAverage: possessionCount ? Math.round(possessionTotal / possessionCount) : null,
+    }))
+    .sort((a, b) => b.points - a.points || b.goalDifference - a.goalDifference || b.goalsFor - a.goalsFor)
+
+  const playerRows = [...players.values()].sort(
+    (a, b) =>
+      b.goals - a.goals ||
+      b.assists - a.assists ||
+      b.appearances - a.appearances ||
+      a.name.localeCompare(b.name),
+  )
+
+  const detail = matchesForSummaries.length
+    ? `${summariesLoaded}/${matchesForSummaries.length} match summaries loaded for live stat aggregation`
+    : 'Waiting for the first live or completed match before player stat rows appear'
+
+  return {
+    source: summarySource(summariesLoaded ? 'online' : matchesForSummaries.length ? 'degraded' : 'degraded', detail),
+    teamRows,
+    playerRows,
+    sourceLinks: [
+      { label: 'ESPN World Cup schedule and stats', href: ESPN_PUBLIC_SCHEDULE_URL, type: 'stats' },
+      { label: 'FotMob World Cup match centre', href: FOTMOB_PUBLIC_WORLD_CUP_URL, type: 'external-stats' },
+      { label: 'GOAL live scores', href: GOAL_PUBLIC_LIVE_SCORES_URL, type: 'external-stats' },
+    ],
+    matchesChecked: matchesForSummaries.length,
+    summariesLoaded,
+    updatedAt: new Date().toISOString(),
   }
 }
 

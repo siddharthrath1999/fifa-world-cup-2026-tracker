@@ -27,7 +27,7 @@ import {
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { downloadCalendar } from './lib/calendar'
-import { loadMatchExtras, loadTeamProfile, loadWorldCupData, watchSources } from './lib/sources'
+import { loadMatchExtras, loadTeamProfile, loadTournamentStats, loadWorldCupData, watchSources } from './lib/sources'
 import { buildStandings, getBestThirds } from './lib/standings'
 import { formatIstDateKey, formatIstDateTime, formatIstDay, getKickoffDistance, getTodayIstKey } from './lib/time'
 import type {
@@ -39,11 +39,12 @@ import type {
   Team,
   TeamPlayer,
   TeamProfile,
+  TournamentStats,
   Venue,
   WorldCupData,
 } from './types'
 
-type ViewMode = 'matches' | 'groups' | 'bracket' | 'teams' | 'venues'
+type ViewMode = 'hub' | 'matches' | 'stats' | 'groups' | 'bracket' | 'teams' | 'venues'
 type QuickFilter = 'all' | 'today' | 'live' | 'upcoming' | 'favorites'
 type ShareTarget = 'app' | 'match'
 type ShareStatus = {
@@ -52,7 +53,7 @@ type ShareStatus = {
   message?: string
 }
 
-const viewIds: ViewMode[] = ['matches', 'groups', 'bracket', 'teams', 'venues']
+const viewIds: ViewMode[] = ['hub', 'matches', 'stats', 'groups', 'bracket', 'teams', 'venues']
 
 function isViewMode(value: string | null): value is ViewMode {
   return valueIdsIncludes(viewIds, value)
@@ -63,9 +64,9 @@ function valueIdsIncludes<T extends string>(values: T[], value: string | null): 
 }
 
 function getInitialView(): ViewMode {
-  if (typeof window === 'undefined') return 'matches'
+  if (typeof window === 'undefined') return 'hub'
   const view = new URLSearchParams(window.location.search).get('view')
-  return isViewMode(view) ? view : 'matches'
+  return isViewMode(view) ? view : 'hub'
 }
 
 function getInitialMatchId() {
@@ -111,6 +112,21 @@ const blankExtras: MatchExtras = {
   form: [],
   headToHead: [],
   broadcasts: [],
+}
+
+const blankTournamentStats: TournamentStats = {
+  source: {
+    id: 'stats',
+    label: 'Tournament stats',
+    status: 'degraded',
+    detail: 'Waiting for tournament data.',
+  },
+  teamRows: [],
+  playerRows: [],
+  sourceLinks: [],
+  matchesChecked: 0,
+  summariesLoaded: 0,
+  updatedAt: new Date(0).toISOString(),
 }
 
 function useLocalFavorites() {
@@ -199,6 +215,42 @@ function groupByDay(matches: Match[]) {
     groups.set(key, [...(groups.get(key) ?? []), match])
     return groups
   }, new Map())
+}
+
+function sortByKickoff(matches: Match[]) {
+  return [...matches].sort((a, b) => new Date(a.dateUtc).getTime() - new Date(b.dateUtc).getTime())
+}
+
+function getNextWindowMatches(matches: Match[], hours = 24) {
+  const now = Date.now()
+  const limit = now + hours * 3_600_000
+  return sortByKickoff(matches).filter((match) => {
+    const kickoff = new Date(match.dateUtc).getTime()
+    return kickoff >= now && kickoff <= limit
+  })
+}
+
+function getFavoriteMatches(matches: Match[], favorites: string[]) {
+  const favoriteSet = new Set(favorites)
+  return sortByKickoff(matches).filter((match) => favoriteSet.has(match.id))
+}
+
+function formatStatValue(value: number | null) {
+  return value === null ? '-' : String(value)
+}
+
+function openSearchUrl(source: 'fotmob' | 'goal', match: Match) {
+  const query = encodeURIComponent(`${match.home.shortName} ${match.away.shortName} World Cup 2026`)
+  return source === 'fotmob'
+    ? `https://www.fotmob.com/search?q=${query}`
+    : `https://www.goal.com/en-us/search?q=${query}`
+}
+
+function openTeamSearchUrl(source: 'fotmob' | 'goal', team: Team) {
+  const query = encodeURIComponent(`${team.name} World Cup 2026`)
+  return source === 'fotmob'
+    ? `https://www.fotmob.com/search?q=${query}`
+    : `https://www.goal.com/en-us/search?q=${query}`
 }
 
 function TeamMark({ team, size = 'md' }: { team: Team; size?: 'sm' | 'md' | 'lg' }) {
@@ -418,6 +470,204 @@ function WatchPanel() {
   )
 }
 
+function MiniMatchCard({
+  match,
+  onMatchSelect,
+  onTeamSelect,
+}: {
+  match: Match
+  onMatchSelect: (matchId: string) => void
+  onTeamSelect: (team: Team) => void
+}) {
+  return (
+    <article className="mini-match-card">
+      <div>
+        <span className={`status-pill ${statusTone(match.status.state)}`}>{match.status.phase ?? match.status.label}</span>
+        <strong>{match.home.shortName} vs {match.away.shortName}</strong>
+        <small>{formatIstDateTime(match.dateUtc)}</small>
+      </div>
+      <div className="mini-teams">
+        <TeamName team={match.home} onTeamSelect={onTeamSelect} />
+        <Score match={match} />
+        <TeamName team={match.away} align="right" onTeamSelect={onTeamSelect} />
+      </div>
+      <button type="button" onClick={() => onMatchSelect(match.id)}>
+        Match centre
+        <ChevronRight size={15} />
+      </button>
+    </article>
+  )
+}
+
+function HubView({
+  matches,
+  standings,
+  favorites,
+  sources,
+  tournamentStats,
+  statsLoading,
+  onMatchSelect,
+  onTeamSelect,
+  onView,
+}: {
+  matches: Match[]
+  standings: GroupStanding[]
+  favorites: string[]
+  sources: SourceState[]
+  tournamentStats: TournamentStats
+  statsLoading: boolean
+  onMatchSelect: (matchId: string) => void
+  onTeamSelect: (team: Team) => void
+  onView: (view: ViewMode) => void
+}) {
+  const nextMatch = sortByKickoff(matches).find(isUpcoming)
+  const nextWindow = getNextWindowMatches(matches, 36)
+  const favoriteMatches = getFavoriteMatches(matches, favorites).slice(0, 4)
+  const liveMatches = matches.filter((match) => match.status.state === 'live' || match.status.state === 'halftime')
+  const activeGroups = standings.slice(0, 4)
+
+  return (
+    <div className="hub-view">
+      <section className="hub-hero">
+        <div>
+          <span>IST command centre</span>
+          <h2>{nextMatch ? `${nextMatch.home.shortName} vs ${nextMatch.away.shortName}` : 'Tournament schedule ready'}</h2>
+          <p>
+            {nextMatch
+              ? `${formatIstDateTime(nextMatch.dateUtc)} · ${nextMatch.venue.city} · ${getKickoffDistance(nextMatch.dateUtc)}`
+              : 'Live match windows, source health, favorites and stat readiness appear here.'}
+          </p>
+        </div>
+        <div className="hub-hero-actions">
+          {nextMatch ? (
+            <button type="button" className="primary-button" onClick={() => onMatchSelect(nextMatch.id)}>
+              <Activity size={16} />
+              Open next match
+            </button>
+          ) : null}
+          <button type="button" className="secondary-button" onClick={() => onView('stats')}>
+            <Table2 size={16} />
+            Stats hub
+          </button>
+        </div>
+      </section>
+
+      <div className="hub-grid">
+        <section className="hub-panel wide">
+          <div className="block-title">
+            <Clock size={18} />
+            <h3>Next 36 hours</h3>
+          </div>
+          {nextWindow.length ? (
+            <div className="mini-match-list">
+              {nextWindow.slice(0, 4).map((match) => (
+                <MiniMatchCard
+                  match={match}
+                  key={match.id}
+                  onMatchSelect={onMatchSelect}
+                  onTeamSelect={onTeamSelect}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>No kickoffs in the next 36 hours. Use Matches for the full schedule.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="hub-panel">
+          <div className="block-title">
+            <Heart size={18} />
+            <h3>Favorites</h3>
+          </div>
+          {favoriteMatches.length ? (
+            <div className="compact-list">
+              {favoriteMatches.map((match) => (
+                <button type="button" key={match.id} onClick={() => onMatchSelect(match.id)}>
+                  <strong>{match.home.code} vs {match.away.code}</strong>
+                  <small>{formatIstDateTime(match.dateUtc)}</small>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>Tap the heart on matches you want to follow.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="hub-panel">
+          <div className="block-title">
+            <Activity size={18} />
+            <h3>Live and stats readiness</h3>
+          </div>
+          <div className="readiness-grid">
+            <div>
+              <span>Live now</span>
+              <strong>{liveMatches.length}</strong>
+            </div>
+            <div>
+              <span>Summaries</span>
+              <strong>{statsLoading ? '-' : `${tournamentStats.summariesLoaded}/${tournamentStats.matchesChecked}`}</strong>
+            </div>
+            <div>
+              <span>Player rows</span>
+              <strong>{statsLoading ? '-' : tournamentStats.playerRows.length}</strong>
+            </div>
+            <div>
+              <span>Team rows</span>
+              <strong>{statsLoading ? '-' : tournamentStats.teamRows.filter((row) => row.played).length}</strong>
+            </div>
+          </div>
+          <div className={`source-note ${sourceTone(tournamentStats.source.status)}`}>
+            {statsLoading ? <RefreshCw size={15} className="spin" /> : <Info size={15} />}
+            {statsLoading ? 'Checking tournament stat feeds...' : tournamentStats.source.detail}
+          </div>
+        </section>
+
+        <section className="hub-panel">
+          <div className="block-title">
+            <Shield size={18} />
+            <h3>Source health</h3>
+          </div>
+          <div className="compact-source-list">
+            {sources.map((source) => (
+              <a href={source.href} target="_blank" rel="noreferrer" className={sourceTone(source.status)} key={source.id}>
+                <strong>{source.label}</strong>
+                <small>{source.detail}</small>
+              </a>
+            ))}
+          </div>
+        </section>
+
+        <section className="hub-panel wide">
+          <div className="block-title">
+            <Trophy size={18} />
+            <h3>Group snapshot</h3>
+          </div>
+          <div className="group-snapshot">
+            {activeGroups.map((group) => (
+              <div key={group.group}>
+                <strong>{group.group}</strong>
+                {group.rows.slice(0, 3).map((row) => (
+                  <button type="button" key={row.team.id} onClick={() => onTeamSelect(row.team)}>
+                    <TeamMark team={row.team} size="sm" />
+                    <span>{row.team.shortName}</span>
+                    <small>{row.points} pts</small>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </section>
+      </div>
+    </div>
+  )
+}
+
 function DetailView({
   match,
   extras,
@@ -503,6 +753,46 @@ function DetailView({
       ))}
     </div>
   ) : null
+  const broadcasts = extras.broadcasts.length ? (
+    <div className="tag-list">
+      {[...new Set(extras.broadcasts)].map((broadcast) => (
+        <span key={broadcast}>{broadcast}</span>
+      ))}
+    </div>
+  ) : null
+  const form = extras.form.length ? (
+    <div className="form-list">
+      {extras.form.map((item) => (
+        <span key={item.team.id}>
+          <TeamMark team={item.team} size="sm" />
+          <strong>{item.team.shortName}</strong>
+          <small>{item.recent.join(' ')}</small>
+        </span>
+      ))}
+    </div>
+  ) : null
+  const headToHead = extras.headToHead.length ? (
+    <div className="link-list">
+      {extras.headToHead.slice(0, 5).map((link) => (
+        <a href={link.href} target="_blank" rel="noreferrer" key={link.href}>
+          {link.label}
+          <ExternalLink size={14} />
+        </a>
+      ))}
+    </div>
+  ) : null
+  const detailedSources = (
+    <div className="link-list">
+      <a href={openSearchUrl('fotmob', match)} target="_blank" rel="noreferrer">
+        FotMob match stats and ratings
+        <ExternalLink size={14} />
+      </a>
+      <a href={openSearchUrl('goal', match)} target="_blank" rel="noreferrer">
+        GOAL match centre and reaction
+        <ExternalLink size={14} />
+      </a>
+    </div>
+  )
 
   return (
     <aside className={panelClassName}>
@@ -582,6 +872,31 @@ function DetailView({
         icon={<AlertTriangle size={18} />}
         items={cards}
         unavailable="No player cards or player notes are available yet."
+      />
+      <AvailabilityPanel
+        title="Broadcast feed"
+        icon={<Tv size={18} />}
+        items={broadcasts}
+        unavailable="Broadcast metadata has not been published for this match yet."
+      />
+      <AvailabilityPanel
+        title="Form and head-to-head"
+        icon={<Star size={18} />}
+        items={
+          form || headToHead ? (
+            <div className="stacked-mini">
+              {form}
+              {headToHead}
+            </div>
+          ) : null
+        }
+        unavailable="Recent form and head-to-head links are not available yet."
+      />
+      <AvailabilityPanel
+        title="Detailed stat sources"
+        icon={<ExternalLink size={18} />}
+        items={detailedSources}
+        unavailable="Detailed stat source links are not available."
       />
 
       <section className="detail-block">
@@ -675,6 +990,184 @@ function BestThirds({ rows, onTeamSelect }: { rows: StandingRow[]; onTeamSelect:
         ))}
       </div>
     </section>
+  )
+}
+
+function StatsView({
+  stats,
+  loading,
+  matches,
+  onMatchSelect,
+  onTeamSelect,
+}: {
+  stats: TournamentStats
+  loading: boolean
+  matches: Match[]
+  onMatchSelect: (matchId: string) => void
+  onTeamSelect: (team: Team) => void
+}) {
+  const playedRows = stats.teamRows.filter(
+    (row) => row.played || row.goalsFor || row.goalsAgainst || row.shots !== null || row.shotsOnTarget !== null,
+  )
+  const playerRows = stats.playerRows.filter(
+    (row) => row.goals || row.assists || row.yellowCards || row.redCards || row.appearances || row.rating,
+  )
+  const liveOrCompleted = sortByKickoff(matches)
+    .filter((match) => match.status.state === 'live' || match.status.state === 'halftime' || match.status.state === 'fulltime')
+    .slice(-6)
+    .reverse()
+
+  return (
+    <div className="stats-view">
+      <section className="stats-hero">
+        <div>
+          <span>Live stat hub</span>
+          <h2>Player and team leaders</h2>
+          <p>{loading ? 'Checking live match summaries...' : stats.source.detail}</p>
+        </div>
+        <div className="stat-source-actions">
+          {stats.sourceLinks.map((link) => (
+            <a href={link.href} target="_blank" rel="noreferrer" key={link.href}>
+              {link.label}
+              <ExternalLink size={14} />
+            </a>
+          ))}
+        </div>
+      </section>
+
+      <div className="stats-grid">
+        <section className="stats-panel wide">
+          <div className="block-title">
+            <Table2 size={18} />
+            <h3>Team leaderboard</h3>
+          </div>
+          {playedRows.length ? (
+            <table className="stats-table">
+              <thead>
+                <tr>
+                  <th>Team</th>
+                  <th>GP</th>
+                  <th>GF</th>
+                  <th>GA</th>
+                  <th>GD</th>
+                  <th>CS</th>
+                  <th>Shots</th>
+                  <th>SOT</th>
+                  <th>Poss</th>
+                </tr>
+              </thead>
+              <tbody>
+                {playedRows.slice(0, 16).map((row) => (
+                  <tr key={row.team.id}>
+                    <td>
+                      <button className="standings-team" type="button" onClick={() => onTeamSelect(row.team)}>
+                        <TeamMark team={row.team} size="sm" />
+                        {row.team.shortName}
+                      </button>
+                    </td>
+                    <td>{row.played}</td>
+                    <td>{row.goalsFor}</td>
+                    <td>{row.goalsAgainst}</td>
+                    <td>{row.goalDifference}</td>
+                    <td>{row.cleanSheets}</td>
+                    <td>{formatStatValue(row.shots)}</td>
+                    <td>{formatStatValue(row.shotsOnTarget)}</td>
+                    <td>{row.possessionAverage === null ? '-' : `${row.possessionAverage}%`}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>Team leaderboards will populate after live or completed matches publish stat rows.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="stats-panel">
+          <div className="block-title">
+            <Trophy size={18} />
+            <h3>Goal leaders</h3>
+          </div>
+          {playerRows.some((row) => row.goals) ? (
+            <div className="leader-list">
+              {playerRows.filter((row) => row.goals).slice(0, 10).map((row, index) => (
+                <span key={row.id}>
+                  <strong>{index + 1}</strong>
+                  <span>{row.name}<small>{row.team}</small></span>
+                  <b>{row.goals}</b>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>Goal scorers appear once event feeds publish goals.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="stats-panel">
+          <div className="block-title">
+            <Users size={18} />
+            <h3>Appearances and cards</h3>
+          </div>
+          {playerRows.length ? (
+            <div className="leader-list">
+              {playerRows.slice(0, 10).map((row, index) => (
+                <span key={row.id}>
+                  <strong>{index + 1}</strong>
+                  <span>{row.name}<small>{row.team}</small></span>
+                  <b>{row.appearances || row.yellowCards + row.redCards}</b>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>Player rows appear when lineup, card, and event feeds are released.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="stats-panel">
+          <div className="block-title">
+            <Star size={18} />
+            <h3>Player ratings</h3>
+          </div>
+          <div className="empty-state">
+            <Info size={18} />
+            <span>
+              Ratings from FotMob or GOAL need a compliant adapter. Direct browser scraping is not enabled in this
+              static app.
+            </span>
+          </div>
+        </section>
+
+        <section className="stats-panel wide">
+          <div className="block-title">
+            <Activity size={18} />
+            <h3>Matches feeding the stats hub</h3>
+          </div>
+          {liveOrCompleted.length ? (
+            <div className="compact-list stat-match-list">
+              {liveOrCompleted.map((match) => (
+                <button type="button" key={match.id} onClick={() => onMatchSelect(match.id)}>
+                  <strong>{match.home.code} vs {match.away.code}</strong>
+                  <small>{match.status.label} · {formatIstDateTime(match.dateUtc)}</small>
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>No live or completed matches are available yet.</span>
+            </div>
+          )}
+        </section>
+      </div>
+    </div>
   )
 }
 
@@ -828,6 +1321,9 @@ function TeamProfilePanel({
   const updates = activeProfile?.updates ?? []
   const links = activeProfile?.links ?? team.links ?? []
   const photoCoverage = activeProfile?.photoCoverage
+  const squadWatch = roster
+    .filter((player) => player.headshot || /forward|midfielder|goalkeeper/i.test(player.position ?? ''))
+    .slice(0, 4)
   const fixtures = getTeamMatchList(team, matches).sort((a, b) => new Date(a.dateUtc).getTime() - new Date(b.dateUtc).getTime())
   const group = fixtures.find((match) => match.group)?.group
   const source = activeProfile?.source ?? {
@@ -993,6 +1489,46 @@ function TeamProfilePanel({
 
         <section className="team-section">
           <div className="block-title">
+            <Star size={18} />
+            <h3>Squad watch</h3>
+          </div>
+          {squadWatch.length ? (
+            <div className="watch-player-list">
+              {squadWatch.map((player) => (
+                <span key={player.id}>
+                  <ProfilePhoto src={player.headshot} fallback={playerInitials(player.name)} className="profile-photo mini-photo" />
+                  <strong>{player.name}</strong>
+                  <small>{[player.position, player.status].filter(Boolean).join(' - ') || 'Squad member'}</small>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">
+              <Info size={18} />
+              <span>Squad watch appears when roster images or position data are available.</span>
+            </div>
+          )}
+        </section>
+
+        <section className="team-section">
+          <div className="block-title">
+            <ExternalLink size={18} />
+            <h3>Detailed team stats</h3>
+          </div>
+          <div className="link-list">
+            <a href={openTeamSearchUrl('fotmob', profileTeam)} target="_blank" rel="noreferrer">
+              FotMob squad and player ratings
+              <ExternalLink size={14} />
+            </a>
+            <a href={openTeamSearchUrl('goal', profileTeam)} target="_blank" rel="noreferrer">
+              GOAL team news and match ratings
+              <ExternalLink size={14} />
+            </a>
+          </div>
+        </section>
+
+        <section className="team-section">
+          <div className="block-title">
             <ExternalLink size={18} />
             <h3>Official media links</h3>
           </div>
@@ -1122,6 +1658,8 @@ function App() {
   const [teamFilter, setTeamFilter] = useState('all')
   const [extras, setExtras] = useState<MatchExtras>(blankExtras)
   const [extrasLoading, setExtrasLoading] = useState(false)
+  const [tournamentStats, setTournamentStats] = useState<TournamentStats>(blankTournamentStats)
+  const [statsLoading, setStatsLoading] = useState(false)
   const [teamProfile, setTeamProfile] = useState<TeamProfile | null>(null)
   const [teamProfileLoading, setTeamProfileLoading] = useState(false)
   const [shareStatus, setShareStatus] = useState<ShareStatus>({ state: 'idle' })
@@ -1170,7 +1708,9 @@ function App() {
   const liveCount = matches.filter((match) => match.status.state === 'live' || match.status.state === 'halftime').length
   const todayKey = getTodayIstKey()
   const viewTabs: { id: ViewMode; icon: typeof Calendar; label: string }[] = [
+    { id: 'hub', icon: Activity, label: 'Hub' },
     { id: 'matches', icon: Calendar, label: 'Matches' },
+    { id: 'stats', icon: Star, label: 'Stats' },
     { id: 'groups', icon: Table2, label: 'Groups' },
     { id: 'bracket', icon: Trophy, label: 'Knockout' },
     { id: 'teams', icon: Shield, label: 'Teams' },
@@ -1183,7 +1723,7 @@ function App() {
       const nextView = params.get('view')
       const nextMatch = params.get('match')
       const nextTeam = params.get('team')
-      setView(isViewMode(nextView) ? nextView : 'matches')
+      setView(isViewMode(nextView) ? nextView : 'hub')
       setSelectedId(nextMatch)
       setSelectedTeamCode(nextTeam)
     }
@@ -1234,6 +1774,26 @@ function App() {
       controller.abort()
     }
   }, [selectedMatch])
+
+  useEffect(() => {
+    if (!matches.length) return
+    const controller = new AbortController()
+    let active = true
+    queueMicrotask(() => {
+      if (active) setStatsLoading(true)
+    })
+    loadTournamentStats(matches, controller.signal)
+      .then((nextStats) => {
+        if (active) setTournamentStats(nextStats)
+      })
+      .finally(() => {
+        if (active) setStatsLoading(false)
+      })
+    return () => {
+      active = false
+      controller.abort()
+    }
+  }, [matches])
 
   useEffect(() => {
     if (!selectedTeam) return
@@ -1440,6 +2000,20 @@ function App() {
 
       <div className={`workspace ${view === 'matches' ? '' : 'wide-workspace'}`}>
         <section className="main-panel">
+          {view === 'hub' ? (
+            <HubView
+              matches={matches}
+              standings={standings}
+              favorites={favorites}
+              sources={data?.sourceStates ?? []}
+              tournamentStats={tournamentStats}
+              statsLoading={statsLoading}
+              onMatchSelect={openMatch}
+              onTeamSelect={openTeam}
+              onView={setView}
+            />
+          ) : null}
+
           {view === 'matches' ? (
             <div className="toolbar">
               <div className="search-box">
@@ -1549,6 +2123,15 @@ function App() {
             </>
           ) : null}
 
+          {view === 'stats' ? (
+            <StatsView
+              stats={tournamentStats}
+              loading={statsLoading}
+              matches={matches}
+              onMatchSelect={openMatch}
+              onTeamSelect={openTeam}
+            />
+          ) : null}
           {view === 'groups' ? <GroupsView standings={standings} onTeamSelect={openTeam} /> : null}
           {view === 'bracket' ? <BracketView matches={matches.filter(isKnockout)} /> : null}
           {view === 'teams' ? (

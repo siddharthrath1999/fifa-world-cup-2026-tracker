@@ -134,6 +134,45 @@ export type MatchExtras = {
   broadcasts: string[]
 }
 
+export type TournamentTeamStat = {
+  team: Team
+  played: number
+  won: number
+  drawn: number
+  lost: number
+  goalsFor: number
+  goalsAgainst: number
+  goalDifference: number
+  points: number
+  cleanSheets: number
+  shots: number | null
+  shotsOnTarget: number | null
+  possessionAverage: number | null
+}
+
+export type TournamentPlayerStat = {
+  id: string
+  name: string
+  team: string
+  goals: number
+  assists: number
+  yellowCards: number
+  redCards: number
+  appearances: number
+  rating?: number
+  ratingSource?: string
+}
+
+export type TournamentStats = {
+  source: SourceState
+  teamRows: TournamentTeamStat[]
+  playerRows: TournamentPlayerStat[]
+  sourceLinks: ExternalLink[]
+  matchesChecked: number
+  summariesLoaded: number
+  updatedAt: string
+}
+
 export type TeamPlayer = {
   id: string
   name: string
