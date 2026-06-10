@@ -21,9 +21,13 @@ const ESPN_SCOREBOARD_URL =
   'https://site.api.espn.com/apis/site/v2/sports/soccer/fifa.world/scoreboard?dates=20260611-20260719&limit=200'
 const FIFA_COMPETITION_ID = '17'
 const FIFA_SEASON_ID = '285023'
+const FIFA_SQUAD_SEASONS = [
+  { id: FIFA_SEASON_ID, label: 'FIFA 2026' },
+  { id: '255711', label: 'FIFA 2022' },
+] as const
 const FIFA_PUBLIC_SCHEDULE_URL = 'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/schedule'
+const FIFA_PUBLIC_TEAMS_URL = 'https://www.fifa.com/en/tournaments/mens/worldcup/canadamexicousa2026/teams'
 const ESPN_PUBLIC_SCOREBOARD_URL = 'https://www.espn.com/soccer/scoreboard/_/league/fifa.world'
-const ESPN_PUBLIC_TEAMS_URL = 'https://www.espn.com/soccer/teams/_/league/fifa.world'
 
 type Localized = { Description?: string }
 
@@ -79,6 +83,11 @@ type FifaResponse = {
 type FifaSquad = {
   Players?: FifaSquadPlayer[]
   Officials?: FifaSquadOfficial[]
+}
+
+type FifaSquadWithSeason = FifaSquad & {
+  seasonId: string
+  seasonLabel: string
 }
 
 type FifaSquadPlayer = {
@@ -642,7 +651,7 @@ export async function loadWorldCupData(signal?: AbortSignal): Promise<WorldCupDa
     label: 'Team media',
     status: teamMap.size ? 'online' : 'degraded',
     detail: teamMap.size ? 'Logos and team links connected' : 'Logos will appear when available',
-    href: ESPN_PUBLIC_TEAMS_URL,
+    href: FIFA_PUBLIC_TEAMS_URL,
   })
 
   const espnMap = buildEspnEventMap(espnEvents)
@@ -888,53 +897,151 @@ function normalizePersonName(value: string) {
     .toLowerCase()
 }
 
-function getFifaPlayerImageMap(squad?: FifaSquad) {
-  const byJersey = new Map<string, FifaSquadPlayer>()
-  const byName = new Map<string, FifaSquadPlayer>()
-  for (const player of squad?.Players ?? []) {
-    if (player.JerseyNum !== undefined) byJersey.set(String(player.JerseyNum), player)
-    const names = [label(player.PlayerName), label(player.ShortName)].filter(Boolean)
-    for (const name of names) byName.set(normalizePersonName(name), player)
-  }
-  return { byJersey, byName }
+function personNameKeys(...values: (string | undefined)[]) {
+  return [...new Set(values.map((value) => (value ? normalizePersonName(value) : '')).filter(Boolean))]
 }
 
-function enrichPlayersWithFifaImages(players: TeamPlayer[], squad?: FifaSquad) {
-  const { byJersey, byName } = getFifaPlayerImageMap(squad)
-  return players.map((player) => {
-    const fifaPlayer =
-      (player.jersey ? byJersey.get(player.jersey) : undefined) ??
-      byName.get(normalizePersonName(player.name)) ??
-      (player.shortName ? byName.get(normalizePersonName(player.shortName)) : undefined)
+function isFifaImage(url?: string) {
+  return Boolean(url?.includes('digitalhub.fifa.com'))
+}
 
-    if (!fifaPlayer) return player
-    const fifaHeadshot = formatFifaImage(fifaPlayer.PlayerPicture?.PictureUrl)
+function fifaSquadUrl(teamId: string, seasonId: string) {
+  return `https://api.fifa.com/api/v3/teams/${teamId}/squad?idCompetition=${FIFA_COMPETITION_ID}&idSeason=${seasonId}&language=en`
+}
+
+async function loadFifaSquads(teamId: string, signal?: AbortSignal): Promise<FifaSquadWithSeason[]> {
+  const results = await Promise.allSettled(
+    FIFA_SQUAD_SEASONS.map(async (season) => {
+      const squad = await fetchJson<FifaSquad>(fifaSquadUrl(teamId, season.id), signal)
+      return {
+        ...squad,
+        seasonId: season.id,
+        seasonLabel: season.label,
+      }
+    }),
+  )
+
+  const abort = results.find(
+    (result) => result.status === 'rejected' && result.reason instanceof DOMException && result.reason.name === 'AbortError',
+  )
+  if (abort?.status === 'rejected') throw abort.reason
+
+  return results.flatMap((result) => (result.status === 'fulfilled' ? [result.value] : []))
+}
+
+type FifaPlayerCandidate = {
+  player: FifaSquadPlayer
+  seasonId: string
+}
+
+function getFifaPlayerLookups(squads: FifaSquadWithSeason[]) {
+  const currentByJersey = new Map<string, FifaSquadPlayer>()
+  const currentByName = new Map<string, FifaSquadPlayer>()
+  const photoById = new Map<string, FifaPlayerCandidate>()
+  const photoByName = new Map<string, FifaPlayerCandidate>()
+  const currentPhotoByJersey = new Map<string, FifaPlayerCandidate>()
+  const currentSquad = squads.find((squad) => squad.seasonId === FIFA_SEASON_ID) ?? squads[0]
+
+  for (const player of currentSquad?.Players ?? []) {
+    if (player.JerseyNum !== undefined) currentByJersey.set(String(player.JerseyNum), player)
+    for (const key of personNameKeys(label(player.PlayerName), label(player.ShortName))) {
+      currentByName.set(key, player)
+    }
+  }
+
+  for (const squad of squads) {
+    for (const player of squad.Players ?? []) {
+      if (!player.PlayerPicture?.PictureUrl) continue
+      const candidate = { player, seasonId: squad.seasonId }
+      if (player.IdPlayer && !photoById.has(player.IdPlayer)) photoById.set(player.IdPlayer, candidate)
+      for (const key of personNameKeys(label(player.PlayerName), label(player.ShortName))) {
+        if (!photoByName.has(key)) photoByName.set(key, candidate)
+      }
+      if (squad.seasonId === FIFA_SEASON_ID && player.JerseyNum !== undefined) {
+        currentPhotoByJersey.set(String(player.JerseyNum), candidate)
+      }
+    }
+  }
+
+  return { currentByJersey, currentByName, currentPhotoByJersey, photoById, photoByName }
+}
+
+function enrichPlayersWithFifaImages(players: TeamPlayer[], squads: FifaSquadWithSeason[]) {
+  const lookups = getFifaPlayerLookups(squads)
+  return players.map((player) => {
+    const nameKeys = personNameKeys(player.name, player.shortName)
+    const infoPlayer =
+      (player.jersey ? lookups.currentByJersey.get(player.jersey) : undefined) ??
+      nameKeys.map((key) => lookups.currentByName.get(key)).find(Boolean)
+    const photoCandidate =
+      lookups.photoById.get(player.id) ??
+      nameKeys.map((key) => lookups.photoByName.get(key)).find(Boolean) ??
+      (player.jersey ? lookups.currentPhotoByJersey.get(player.jersey) : undefined)
+    const fifaHeadshot = formatFifaImage(photoCandidate?.player.PlayerPicture?.PictureUrl)
+    const fifaInfoPlayer = infoPlayer ?? photoCandidate?.player
+
+    if (!fifaHeadshot && !fifaInfoPlayer) return player
     return {
       ...player,
       headshot: fifaHeadshot ?? player.headshot,
-      position: player.position ?? label(fifaPlayer.PositionLocalized) ?? label(fifaPlayer.RealPositionLocalized),
-      height: player.height ?? (fifaPlayer.Height ? `${fifaPlayer.Height} cm` : undefined),
-      weight: player.weight ?? (fifaPlayer.Weight ? `${fifaPlayer.Weight} kg` : undefined),
+      position:
+        player.position ||
+        label(fifaInfoPlayer?.PositionLocalized) ||
+        label(fifaInfoPlayer?.RealPositionLocalized) ||
+        undefined,
+      height: player.height ?? (fifaInfoPlayer?.Height ? `${fifaInfoPlayer.Height} cm` : undefined),
+      weight: player.weight ?? (fifaInfoPlayer?.Weight ? `${fifaInfoPlayer.Weight} kg` : undefined),
     }
   })
 }
 
-function parseFifaStaff(squad?: FifaSquad): TeamStaff[] {
+function getFifaStaffPhotoLookup(squads: FifaSquadWithSeason[]) {
+  const byName = new Map<string, FifaSquadOfficial>()
+  for (const squad of squads) {
+    for (const official of squad.Officials ?? []) {
+      if (!official.PictureUrl) continue
+      for (const key of personNameKeys(label(official.Alias), label(official.Name))) {
+        if (!byName.has(key)) byName.set(key, official)
+      }
+    }
+  }
+  return byName
+}
+
+function enrichStaffWithFifaImages(staff: TeamStaff[], squads: FifaSquadWithSeason[]) {
+  const photoByName = getFifaStaffPhotoLookup(squads)
+  return staff.map((member) => {
+    const photoOfficial = personNameKeys(member.name)
+      .map((key) => photoByName.get(key))
+      .find(Boolean)
+    return {
+      ...member,
+      headshot: formatFifaImage(photoOfficial?.PictureUrl ?? undefined, 180) ?? member.headshot,
+    }
+  })
+}
+
+function parseFifaStaff(squads: FifaSquadWithSeason[]): TeamStaff[] {
+  const primarySquad = squads.find((squad) => squad.seasonId === FIFA_SEASON_ID) ?? squads[0]
+  const photoByName = getFifaStaffPhotoLookup(squads)
   return (
-    squad?.Officials?.map((official, index) => {
+    primarySquad?.Officials?.map((official, index) => {
       const name = label(official.Alias) || label(official.Name)
       if (!name) return null
+      const photoOfficial = personNameKeys(name)
+        .map((key) => photoByName.get(key))
+        .find(Boolean)
       return {
         id: official.IdCoach ?? `fifa-staff-${index}`,
         name,
         role: official.Role === 0 ? 'Manager / head coach' : 'Technical staff',
-        headshot: formatFifaImage(official.PictureUrl ?? undefined, 180),
+        headshot: formatFifaImage(official.PictureUrl ?? photoOfficial?.PictureUrl ?? undefined, 180),
       }
     }).filter(Boolean) as TeamStaff[]
   ) ?? []
 }
 
-function parseFifaPlayers(squad?: FifaSquad): TeamPlayer[] {
+function parseFifaPlayers(squad?: FifaSquadWithSeason): TeamPlayer[] {
   return (
     squad?.Players?.map((player, index) => {
       const name = label(player.PlayerName) || label(player.ShortName)
@@ -1000,20 +1107,15 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
         signal,
       )
     : Promise.resolve({})
-  const fifaSquadPromise: Promise<FifaSquad> = fifaTeamId
-    ? fetchJson<FifaSquad>(
-        `https://api.fifa.com/api/v3/teams/${fifaTeamId}/squad?idCompetition=${FIFA_COMPETITION_ID}&idSeason=${FIFA_SEASON_ID}&language=en`,
-        signal,
-      )
-    : Promise.resolve({})
+  const fifaSquadsPromise: Promise<FifaSquadWithSeason[]> = fifaTeamId ? loadFifaSquads(fifaTeamId, signal) : Promise.resolve([])
 
-  const [detailsResult, rosterResult, fifaSquadResult] = await Promise.allSettled([
+  const [detailsResult, rosterResult, fifaSquadsResult] = await Promise.allSettled([
     detailsPromise,
     rosterPromise,
-    fifaSquadPromise,
+    fifaSquadsPromise,
   ])
 
-  if (detailsResult.status === 'rejected' && rosterResult.status === 'rejected' && fifaSquadResult.status === 'rejected') {
+  if (detailsResult.status === 'rejected' && rosterResult.status === 'rejected' && fifaSquadsResult.status === 'rejected') {
     const message =
       detailsResult.reason instanceof Error ? detailsResult.reason.message : 'Team profile source failed.'
     return buildTeamProfileFallback(team, matches, message)
@@ -1021,7 +1123,8 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
 
   const details = detailsResult.status === 'fulfilled' ? detailsResult.value.team : undefined
   const roster = rosterResult.status === 'fulfilled' ? rosterResult.value : undefined
-  const fifaSquad = fifaSquadResult.status === 'fulfilled' ? fifaSquadResult.value : undefined
+  const fifaSquads = fifaSquadsResult.status === 'fulfilled' ? fifaSquadsResult.value : []
+  const primaryFifaSquad = fifaSquads.find((squad) => squad.seasonId === FIFA_SEASON_ID) ?? fifaSquads[0]
   const profileTeam: Team = {
     ...team,
     id: details?.id ?? team.id,
@@ -1031,13 +1134,25 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
     code: details?.abbreviation ?? team.code,
     logo: details?.logos?.[0]?.href ?? team.logo,
     color: details?.color ?? team.color,
-    links: uniqueLinks([...(team.links ?? []), ...espnLinksToExternal(details?.links)]),
+    links: uniqueLinks([
+      ...(team.links ?? []),
+      { label: 'FIFA teams hub', href: FIFA_PUBLIC_TEAMS_URL, type: 'official' },
+      ...espnLinksToExternal(details?.links),
+    ]),
   }
   const rosterPlayers = roster?.athletes?.map(parsePlayer).filter(Boolean) as TeamPlayer[] | undefined
-  const players = enrichPlayersWithFifaImages(rosterPlayers?.length ? rosterPlayers : parseFifaPlayers(fifaSquad), fifaSquad)
-  const staff = parseFifaStaff(fifaSquad).length ? parseFifaStaff(fifaSquad) : parseStaff(roster)
+  const players = enrichPlayersWithFifaImages(rosterPlayers?.length ? rosterPlayers : parseFifaPlayers(primaryFifaSquad), fifaSquads)
+  const fifaStaff = parseFifaStaff(fifaSquads)
+  const staff = enrichStaffWithFifaImages(fifaStaff.length ? fifaStaff : parseStaff(roster), fifaSquads)
   const nextEvent = parseNextEvent(details, profileTeam, matches)
   const updates: TeamUpdate[] = []
+  const playerPhotos = players.filter((player) => player.headshot).length
+  const fifaPlayerPhotos = players.filter((player) => isFifaImage(player.headshot)).length
+  const staffPhotos = staff.filter((member) => member.headshot).length
+  const photoSources = [
+    ...(fifaSquads.some((squad) => squad.Players?.some((player) => player.PlayerPicture?.PictureUrl)) ? ['FIFA'] : []),
+    ...(players.some((player) => player.headshot && !isFifaImage(player.headshot)) ? ['ESPN'] : []),
+  ]
 
   if (nextEvent) {
     updates.push({
@@ -1055,11 +1170,11 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
     })
   }
 
-  if (fifaSquad?.Players?.length) {
+  if (fifaSquads.length && players.length) {
     updates.push({
-      id: 'fifa-squad-images',
-      label: 'FIFA squad',
-      detail: `${fifaSquad.Players.filter((player) => player.PlayerPicture?.PictureUrl).length} official player photos connected`,
+      id: 'photo-coverage',
+      label: 'Photo coverage',
+      detail: `${playerPhotos}/${players.length} player photos connected from ${photoSources.length ? photoSources.join(' and ') : 'the free roster feeds'}`,
     })
   }
 
@@ -1071,9 +1186,12 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
     })
   }
 
+  const photoDetail = players.length
+    ? `${playerPhotos}/${players.length} player photos connected${fifaPlayerPhotos ? `, including ${fifaPlayerPhotos} official FIFA photos` : ''}`
+    : 'Roster details are not available right now'
   const sourceDetail =
-    fifaSquad?.Players?.some((player) => player.PlayerPicture?.PictureUrl)
-      ? `${players.length} players loaded with official FIFA photos`
+    playerPhotos
+      ? `${players.length} players loaded; ${photoDetail}`
       : detailsResult.status === 'fulfilled' && rosterResult.status === 'fulfilled'
         ? `${players.length} players and team profile loaded`
         : detailsResult.status === 'fulfilled'
@@ -1092,6 +1210,14 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
     updates,
     links: profileTeam.links ?? [],
     rosterUpdatedAt: roster?.timestamp,
+    photoCoverage: {
+      players: players.length,
+      playerPhotos,
+      fifaPlayerPhotos,
+      staff: staff.length,
+      staffPhotos,
+      sources: photoSources,
+    },
   }
 }
 

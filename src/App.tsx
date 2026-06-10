@@ -12,7 +12,6 @@ import {
   Filter,
   Heart,
   Info,
-  ListFilter,
   MapPin,
   RefreshCw,
   Search,
@@ -828,6 +827,7 @@ function TeamProfilePanel({
   const injuries = activeProfile?.injuries ?? []
   const updates = activeProfile?.updates ?? []
   const links = activeProfile?.links ?? team.links ?? []
+  const photoCoverage = activeProfile?.photoCoverage
   const fixtures = getTeamMatchList(team, matches).sort((a, b) => new Date(a.dateUtc).getTime() - new Date(b.dateUtc).getTime())
   const group = fixtures.find((match) => match.group)?.group
   const source = activeProfile?.source ?? {
@@ -868,6 +868,10 @@ function TeamProfilePanel({
         <div>
           <span>Injuries</span>
           <strong>{injuries.length}</strong>
+        </div>
+        <div>
+          <span>Photos</span>
+          <strong>{photoCoverage ? `${photoCoverage.playerPhotos}/${photoCoverage.players}` : '-'}</strong>
         </div>
         <div>
           <span>Staff</span>
@@ -1165,11 +1169,11 @@ function App() {
   const venues = useMemo(() => getVenues(matches), [matches])
   const liveCount = matches.filter((match) => match.status.state === 'live' || match.status.state === 'halftime').length
   const todayKey = getTodayIstKey()
-  const viewTabs: { id: ViewMode; icon: typeof ListFilter; label: string }[] = [
-    { id: 'matches', icon: ListFilter, label: 'Matches' },
+  const viewTabs: { id: ViewMode; icon: typeof Calendar; label: string }[] = [
+    { id: 'matches', icon: Calendar, label: 'Matches' },
     { id: 'groups', icon: Table2, label: 'Groups' },
     { id: 'bracket', icon: Trophy, label: 'Knockout' },
-    { id: 'teams', icon: Users, label: 'Teams' },
+    { id: 'teams', icon: Shield, label: 'Teams' },
     { id: 'venues', icon: MapPin, label: 'Venues' },
   ]
 

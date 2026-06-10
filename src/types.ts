@@ -180,6 +180,14 @@ export type TeamProfile = {
   updates: TeamUpdate[]
   links: ExternalLink[]
   rosterUpdatedAt?: string
+  photoCoverage?: {
+    players: number
+    playerPhotos: number
+    fifaPlayerPhotos: number
+    staff: number
+    staffPhotos: number
+    sources: string[]
+  }
 }
 
 export type WorldCupData = {
