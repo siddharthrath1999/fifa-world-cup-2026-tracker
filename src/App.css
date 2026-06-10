@@ -751,9 +751,25 @@
 }
 
 .team-mark img {
-  width: 100%;
-  height: 100%;
+  display: block;
+  width: 82%;
+  height: 82%;
   object-fit: contain;
+  border-radius: 2px;
+  filter: drop-shadow(0 1px 1px rgba(15, 42, 32, 0.12));
+}
+
+.team-mark.lg img {
+  width: 84%;
+  height: 84%;
+}
+
+.team-mark img[src*='flagcdn.com'] {
+  box-shadow: 0 0 0 1px rgba(15, 42, 32, 0.1);
+}
+
+.team-mark span {
+  line-height: 1;
 }
 
 .score {

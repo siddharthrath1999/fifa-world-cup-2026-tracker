@@ -279,10 +279,233 @@ function openTeamSearchUrl(source: 'fotmob' | 'goal', team: Team) {
     : `https://www.goal.com/en-us/search?q=${query}`
 }
 
+const teamFlagCodes: Record<string, string> = {
+  AFG: 'af',
+  ALB: 'al',
+  ALG: 'dz',
+  AND: 'ad',
+  ANG: 'ao',
+  ARG: 'ar',
+  ARM: 'am',
+  ARU: 'aw',
+  ASA: 'as',
+  AUS: 'au',
+  AUT: 'at',
+  AZE: 'az',
+  BAH: 'bs',
+  BAN: 'bd',
+  BAR: 'bb',
+  BDI: 'bi',
+  BEL: 'be',
+  BEN: 'bj',
+  BER: 'bm',
+  BFA: 'bf',
+  BHR: 'bh',
+  BIH: 'ba',
+  BLR: 'by',
+  BLZ: 'bz',
+  BOL: 'bo',
+  BOT: 'bw',
+  BRA: 'br',
+  BRU: 'bn',
+  BUL: 'bg',
+  CAM: 'kh',
+  CAN: 'ca',
+  CGO: 'cg',
+  CHA: 'td',
+  CHI: 'cl',
+  CHN: 'cn',
+  CIV: 'ci',
+  CMR: 'cm',
+  COD: 'cd',
+  COL: 'co',
+  COM: 'km',
+  CPV: 'cv',
+  CRC: 'cr',
+  CRO: 'hr',
+  CTA: 'cf',
+  CUB: 'cu',
+  CUW: 'cw',
+  CYP: 'cy',
+  CZE: 'cz',
+  DEN: 'dk',
+  DJI: 'dj',
+  DMA: 'dm',
+  DOM: 'do',
+  ECU: 'ec',
+  EGY: 'eg',
+  ENG: 'gb-eng',
+  EQG: 'gq',
+  ERI: 'er',
+  ESP: 'es',
+  EST: 'ee',
+  ETH: 'et',
+  FIJ: 'fj',
+  FIN: 'fi',
+  FRA: 'fr',
+  FRO: 'fo',
+  GAB: 'ga',
+  GAM: 'gm',
+  GEO: 'ge',
+  GER: 'de',
+  GHA: 'gh',
+  GIB: 'gi',
+  GRE: 'gr',
+  GRN: 'gd',
+  GUA: 'gt',
+  GUI: 'gn',
+  GUM: 'gu',
+  GUY: 'gy',
+  HAI: 'ht',
+  HKG: 'hk',
+  HON: 'hn',
+  HUN: 'hu',
+  IDN: 'id',
+  IND: 'in',
+  IRL: 'ie',
+  IRN: 'ir',
+  IRQ: 'iq',
+  ISL: 'is',
+  ISR: 'il',
+  ITA: 'it',
+  JAM: 'jm',
+  JOR: 'jo',
+  JPN: 'jp',
+  KAZ: 'kz',
+  KEN: 'ke',
+  KGZ: 'kg',
+  KOR: 'kr',
+  KSA: 'sa',
+  KUW: 'kw',
+  LAO: 'la',
+  LBN: 'lb',
+  LBR: 'lr',
+  LBY: 'ly',
+  LIE: 'li',
+  LTU: 'lt',
+  LUX: 'lu',
+  LVA: 'lv',
+  MAD: 'mg',
+  MAR: 'ma',
+  MAS: 'my',
+  MDA: 'md',
+  MDV: 'mv',
+  MEX: 'mx',
+  MKD: 'mk',
+  MLI: 'ml',
+  MLT: 'mt',
+  MNE: 'me',
+  MNG: 'mn',
+  MOZ: 'mz',
+  MRI: 'mu',
+  MTN: 'mr',
+  MYA: 'mm',
+  NAM: 'na',
+  NCA: 'ni',
+  NED: 'nl',
+  NEP: 'np',
+  NGA: 'ng',
+  NIR: 'gb-nir',
+  NIG: 'ne',
+  NOR: 'no',
+  NZL: 'nz',
+  OMA: 'om',
+  PAK: 'pk',
+  PAN: 'pa',
+  PAR: 'py',
+  PER: 'pe',
+  PHI: 'ph',
+  PLE: 'ps',
+  POL: 'pl',
+  POR: 'pt',
+  PRK: 'kp',
+  PUR: 'pr',
+  QAT: 'qa',
+  ROU: 'ro',
+  RSA: 'za',
+  RUS: 'ru',
+  RWA: 'rw',
+  SCO: 'gb-sct',
+  SEN: 'sn',
+  SEY: 'sc',
+  SIN: 'sg',
+  SLV: 'sv',
+  SMR: 'sm',
+  SOL: 'sb',
+  SOM: 'so',
+  SRB: 'rs',
+  SRI: 'lk',
+  SSD: 'ss',
+  STP: 'st',
+  SUD: 'sd',
+  SUI: 'ch',
+  SUR: 'sr',
+  SVK: 'sk',
+  SVN: 'si',
+  SWE: 'se',
+  SWZ: 'sz',
+  SYR: 'sy',
+  TAH: 'pf',
+  TAN: 'tz',
+  THA: 'th',
+  TJK: 'tj',
+  TKM: 'tm',
+  TOG: 'tg',
+  TPE: 'tw',
+  TRI: 'tt',
+  TUN: 'tn',
+  TUR: 'tr',
+  UAE: 'ae',
+  UGA: 'ug',
+  UKR: 'ua',
+  URU: 'uy',
+  USA: 'us',
+  UZB: 'uz',
+  VAN: 'vu',
+  VEN: 've',
+  VIE: 'vn',
+  WAL: 'gb-wls',
+  YEM: 'ye',
+  ZAM: 'zm',
+  ZIM: 'zw',
+}
+
+function getTeamFlagUrl(team: Team) {
+  const lookupCodes = [team.countryCode, team.code, team.id].filter(Boolean).map((code) => code!.toUpperCase())
+  const flagCode = lookupCodes.map((code) => teamFlagCodes[code] ?? (code.length === 2 ? code.toLowerCase() : '')).find(Boolean)
+  return flagCode ? `https://flagcdn.com/w80/${flagCode}.png` : null
+}
+
+function getTeamImageCandidates(team: Team) {
+  const fallbackFlag = getTeamFlagUrl(team)
+  return [team.logo, fallbackFlag].filter((url, index, urls): url is string => !!url && urls.indexOf(url) === index)
+}
+
+function TeamMarkVisual({ code, imageCandidates }: { code: string; imageCandidates: string[] }) {
+  const [imageIndex, setImageIndex] = useState(0)
+  const imageUrl = imageCandidates[imageIndex]
+
+  return imageUrl ? (
+    <img
+      key={imageUrl}
+      src={imageUrl}
+      alt=""
+      loading="lazy"
+      referrerPolicy="no-referrer"
+      onError={() => setImageIndex((currentIndex) => currentIndex + 1)}
+    />
+  ) : (
+    <span>{code.slice(0, 3)}</span>
+  )
+}
+
 function TeamMark({ team, size = 'md' }: { team: Team; size?: 'sm' | 'md' | 'lg' }) {
+  const imageCandidates = getTeamImageCandidates(team)
+  const imageKey = imageCandidates.join('|')
+
   return (
     <span className={`team-mark ${size}`} style={{ '--team-color': `#${team.color ?? '0f8b62'}` } as React.CSSProperties}>
-      {team.logo ? <img src={team.logo} alt="" /> : <span>{team.code.slice(0, 3)}</span>}
+      <TeamMarkVisual key={imageKey} code={team.code} imageCandidates={imageCandidates} />
     </span>
   )
 }
