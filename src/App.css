@@ -82,17 +82,38 @@
 .brand {
   gap: 12px;
   min-width: 260px;
+  color: inherit;
+  text-decoration: none;
 }
 
 .brand-mark {
-  width: 42px;
-  height: 42px;
+  width: 46px;
+  height: 46px;
   display: grid;
   place-items: center;
   border-radius: 8px;
-  color: #fff;
-  background: linear-gradient(135deg, var(--slate), #26342f);
+  overflow: hidden;
+  color: var(--slate);
+  background: #fff;
+  border: 1px solid var(--line);
   box-shadow: 0 10px 22px rgba(17, 24, 22, 0.12);
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+
+.brand:hover strong,
+.brand:focus-visible strong {
+  color: var(--green-dark);
+}
+
+.brand:focus-visible {
+  outline: 2px solid rgba(11, 122, 89, 0.28);
+  outline-offset: 4px;
+  border-radius: 8px;
 }
 
 .brand strong {
@@ -1683,6 +1704,7 @@ tr.third td:first-child {
 }
 
 .player-card {
+  position: relative;
   display: grid;
   grid-template-columns: 50px minmax(0, 1fr) auto;
   align-items: center;
@@ -1692,6 +1714,17 @@ tr.third td:first-child {
   border: 1px solid var(--soft);
   border-radius: 8px;
   background: var(--panel-strong);
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    transform 0.18s ease;
+}
+
+.player-card:hover,
+.staff-card:hover {
+  border-color: var(--line-strong);
+  background: #fff;
+  transform: translateY(-1px);
 }
 
 .profile-photo {
@@ -1701,7 +1734,10 @@ tr.third td:first-child {
   place-items: center;
   overflow: hidden;
   border-radius: 50%;
-  background: var(--blue-soft);
+  border: 1px solid rgba(35, 90, 139, 0.12);
+  background:
+    radial-gradient(circle at 35% 25%, rgba(255, 255, 255, 0.9), rgba(255, 255, 255, 0) 38%),
+    linear-gradient(135deg, var(--blue-soft), #e7eee9);
   color: var(--blue);
   font-size: 11px;
   font-weight: 900;
@@ -1722,6 +1758,25 @@ tr.third td:first-child {
   width: 34px;
   height: 34px;
   font-size: 9px;
+}
+
+.photo-source-link {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--muted);
+  background: #fff;
+  text-decoration: none;
+}
+
+.photo-source-link:hover,
+.photo-source-link:focus-visible {
+  color: var(--green-dark);
+  border-color: var(--green);
+  background: var(--green-soft);
 }
 
 .player-card div {
@@ -1823,10 +1878,15 @@ tr.third td:first-child {
 
 .staff-card {
   display: grid;
-  grid-template-columns: 46px minmax(0, 1fr);
+  grid-template-columns: 46px minmax(0, 1fr) auto;
   align-items: center;
   gap: 10px;
   min-height: 62px;
+  border: 1px solid transparent;
+  transition:
+    border-color 0.18s ease,
+    background 0.18s ease,
+    transform 0.18s ease;
 }
 
 .staff-card div {

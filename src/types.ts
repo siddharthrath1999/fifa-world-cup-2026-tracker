@@ -193,6 +193,7 @@ export type TeamStaff = {
   name: string
   role?: string
   headshot?: string
+  links?: ExternalLink[]
 }
 
 export type TeamUpdate = {
@@ -223,6 +224,7 @@ export type TeamProfile = {
     players: number
     playerPhotos: number
     fifaPlayerPhotos: number
+    wikimediaPlayerPhotos: number
     staff: number
     staffPhotos: number
     sources: string[]

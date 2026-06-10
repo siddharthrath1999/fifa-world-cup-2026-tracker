@@ -911,6 +911,10 @@ function isFifaImage(url?: string) {
   return Boolean(url?.includes('digitalhub.fifa.com'))
 }
 
+function isWikimediaImage(url?: string) {
+  return Boolean(url?.includes('upload.wikimedia.org'))
+}
+
 function fifaSquadUrl(teamId: string, seasonId: string) {
   return `https://api.fifa.com/api/v3/teams/${teamId}/squad?idCompetition=${FIFA_COMPETITION_ID}&idSeason=${seasonId}&language=en`
 }
@@ -939,6 +943,27 @@ type FifaPlayerCandidate = {
   player: FifaSquadPlayer
   seasonId: string
 }
+
+type WikimediaImageResult = {
+  image?: string
+  pageUrl?: string
+}
+
+type WikimediaPage = {
+  title?: string
+  fullurl?: string
+  thumbnail?: { source?: string }
+  extract?: string
+  index?: number
+}
+
+type WikimediaResponse = {
+  query?: {
+    pages?: Record<string, WikimediaPage>
+  }
+}
+
+const wikimediaImageCache = new Map<string, Promise<WikimediaImageResult>>()
 
 function getFifaPlayerLookups(squads: FifaSquadWithSeason[]) {
   const currentByJersey = new Map<string, FifaSquadPlayer>()
@@ -1001,6 +1026,91 @@ function enrichPlayersWithFifaImages(players: TeamPlayer[], squads: FifaSquadWit
   })
 }
 
+function nameTokens(value: string) {
+  return value
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .split(/[^a-z0-9]+/i)
+    .map((token) => token.toLowerCase())
+    .filter((token) => token.length > 1)
+}
+
+function isLikelyPersonImagePage(page: WikimediaPage, name: string) {
+  if (!page.thumbnail?.source || !page.title) return false
+  const extract = page.extract?.toLowerCase() ?? ''
+  const title = page.title.replace(/\(.+\)/, '')
+  const titleKey = normalizePersonName(title)
+  const nameKey = normalizePersonName(name)
+  const tokens = nameTokens(name)
+  const first = tokens[0]
+  const last = tokens[tokens.length - 1]
+  const hasNameMatch =
+    titleKey === nameKey ||
+    Boolean(first && last && titleKey.includes(first) && titleKey.includes(last)) ||
+    Boolean(last && titleKey.includes(last) && extract.includes('footballer'))
+  return hasNameMatch && /footballer|association football|soccer player|football manager|football coach/.test(extract)
+}
+
+async function lookupWikimediaImage(name: string, signal?: AbortSignal): Promise<WikimediaImageResult> {
+  const cacheKey = normalizePersonName(name)
+  const cached = wikimediaImageCache.get(cacheKey)
+  if (cached) return cached
+
+  const request = (async () => {
+    const params = new URLSearchParams({
+      action: 'query',
+      format: 'json',
+      origin: '*',
+      generator: 'search',
+      gsrsearch: `${name} footballer`,
+      gsrlimit: '3',
+      prop: 'pageimages|info|extracts',
+      piprop: 'thumbnail',
+      pithumbsize: '220',
+      inprop: 'url',
+      exintro: '1',
+      explaintext: '1',
+    })
+    const data = await fetchJson<WikimediaResponse>(`https://en.wikipedia.org/w/api.php?${params.toString()}`, signal)
+    const page = Object.values(data.query?.pages ?? {})
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+      .find((candidate) => isLikelyPersonImagePage(candidate, name))
+    return {
+      image: page?.thumbnail?.source,
+      pageUrl: page?.fullurl,
+    }
+  })()
+
+  wikimediaImageCache.set(cacheKey, request)
+  return request
+}
+
+async function enrichPlayersWithWikimediaImages(players: TeamPlayer[], signal?: AbortSignal) {
+  const enriched = await Promise.allSettled(
+    players.map(async (player) => {
+      if (player.headshot) return player
+      const result = await lookupWikimediaImage(player.name, signal)
+      if (!result.image) return player
+      return {
+        ...player,
+        headshot: result.image,
+        links: uniqueLinks([
+          ...player.links,
+          ...(result.pageUrl
+            ? [{ label: 'Photo source: Wikipedia', href: result.pageUrl, type: 'image-source' }]
+            : []),
+        ]),
+      }
+    }),
+  )
+
+  const abort = enriched.find(
+    (result) => result.status === 'rejected' && result.reason instanceof DOMException && result.reason.name === 'AbortError',
+  )
+  if (abort?.status === 'rejected') throw abort.reason
+  return enriched.map((result, index) => (result.status === 'fulfilled' ? result.value : players[index]))
+}
+
 function getFifaStaffPhotoLookup(squads: FifaSquadWithSeason[]) {
   const byName = new Map<string, FifaSquadOfficial>()
   for (const squad of squads) {
@@ -1025,6 +1135,32 @@ function enrichStaffWithFifaImages(staff: TeamStaff[], squads: FifaSquadWithSeas
       headshot: formatFifaImage(photoOfficial?.PictureUrl ?? undefined, 180) ?? member.headshot,
     }
   })
+}
+
+async function enrichStaffWithWikimediaImages(staff: TeamStaff[], signal?: AbortSignal) {
+  const enriched = await Promise.allSettled(
+    staff.map(async (member) => {
+      if (member.headshot || nameTokens(member.name).length < 2) return member
+      const result = await lookupWikimediaImage(member.name, signal)
+      if (!result.image) return member
+      return {
+        ...member,
+        headshot: result.image,
+        links: uniqueLinks([
+          ...(member.links ?? []),
+          ...(result.pageUrl
+            ? [{ label: 'Photo source: Wikipedia', href: result.pageUrl, type: 'image-source' }]
+            : []),
+        ]),
+      }
+    }),
+  )
+
+  const abort = enriched.find(
+    (result) => result.status === 'rejected' && result.reason instanceof DOMException && result.reason.name === 'AbortError',
+  )
+  if (abort?.status === 'rejected') throw abort.reason
+  return enriched.map((result, index) => (result.status === 'fulfilled' ? result.value : staff[index]))
 }
 
 function parseFifaStaff(squads: FifaSquadWithSeason[]): TeamStaff[] {
@@ -1147,17 +1283,30 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
     ]),
   }
   const rosterPlayers = roster?.athletes?.map(parsePlayer).filter(Boolean) as TeamPlayer[] | undefined
-  const players = enrichPlayersWithFifaImages(rosterPlayers?.length ? rosterPlayers : parseFifaPlayers(primaryFifaSquad), fifaSquads)
+  const players = await enrichPlayersWithWikimediaImages(
+    enrichPlayersWithFifaImages(rosterPlayers?.length ? rosterPlayers : parseFifaPlayers(primaryFifaSquad), fifaSquads),
+    signal,
+  )
   const fifaStaff = parseFifaStaff(fifaSquads)
-  const staff = enrichStaffWithFifaImages(fifaStaff.length ? fifaStaff : parseStaff(roster), fifaSquads)
+  const staff = await enrichStaffWithWikimediaImages(
+    enrichStaffWithFifaImages(fifaStaff.length ? fifaStaff : parseStaff(roster), fifaSquads),
+    signal,
+  )
   const nextEvent = parseNextEvent(details, profileTeam, matches)
   const updates: TeamUpdate[] = []
   const playerPhotos = players.filter((player) => player.headshot).length
   const fifaPlayerPhotos = players.filter((player) => isFifaImage(player.headshot)).length
+  const wikimediaPlayerPhotos = players.filter((player) => isWikimediaImage(player.headshot)).length
+  const espnPlayerPhotos = players.filter(
+    (player) => player.headshot && !isFifaImage(player.headshot) && !isWikimediaImage(player.headshot),
+  ).length
   const staffPhotos = staff.filter((member) => member.headshot).length
   const photoSources = [
     ...(fifaSquads.some((squad) => squad.Players?.some((player) => player.PlayerPicture?.PictureUrl)) ? ['FIFA'] : []),
-    ...(players.some((player) => player.headshot && !isFifaImage(player.headshot)) ? ['ESPN'] : []),
+    ...(players.some((player) => player.headshot && !isFifaImage(player.headshot) && !isWikimediaImage(player.headshot))
+      ? ['ESPN']
+      : []),
+    ...(wikimediaPlayerPhotos ? ['Wikimedia'] : []),
   ]
 
   if (nextEvent) {
@@ -1192,8 +1341,13 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
     })
   }
 
+  const photoParts = [
+    fifaPlayerPhotos ? `${fifaPlayerPhotos} official FIFA photos` : null,
+    espnPlayerPhotos ? `${espnPlayerPhotos} ESPN images` : null,
+    wikimediaPlayerPhotos ? `${wikimediaPlayerPhotos} Wikimedia images` : null,
+  ].filter(Boolean)
   const photoDetail = players.length
-    ? `${playerPhotos}/${players.length} player photos connected${fifaPlayerPhotos ? `, including ${fifaPlayerPhotos} official FIFA photos` : ''}`
+    ? `${playerPhotos}/${players.length} player photos connected${photoParts.length ? `, including ${photoParts.join(' and ')}` : ''}`
     : 'Roster details are not available right now'
   const sourceDetail =
     playerPhotos
@@ -1220,6 +1374,7 @@ export async function loadTeamProfile(team: Team, matches: Match[], signal?: Abo
       players: players.length,
       playerPhotos,
       fifaPlayerPhotos,
+      wikimediaPlayerPhotos,
       staff: staff.length,
       staffPhotos,
       sources: photoSources,

@@ -129,6 +129,9 @@ const blankTournamentStats: TournamentStats = {
   updatedAt: new Date(0).toISOString(),
 }
 
+const WORLD_CUP_2026_LOGO_URL =
+  'https://digitalhub.fifa.com/transform/7189acb1-8453-4a14-8248-70ab7a76f372/FWC-26-Logo-for-Countdown?&io=transform:fill&quality=75'
+
 function useLocalFavorites() {
   const [favorites, setFavorites] = useState<string[]>(() => {
     try {
@@ -1272,6 +1275,7 @@ function ProfilePhoto({
 }
 
 function PlayerCard({ player }: { player: TeamPlayer }) {
+  const photoSource = player.links.find((link) => link.type === 'image-source')
   return (
     <article className="player-card">
       <ProfilePhoto src={player.headshot} fallback={playerInitials(player.name)} className="profile-photo player-photo" />
@@ -1282,12 +1286,25 @@ function PlayerCard({ player }: { player: TeamPlayer }) {
             'Squad details pending'}
         </span>
       </div>
+      {photoSource ? (
+        <a
+          className="photo-source-link"
+          href={photoSource.href}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`${player.name} photo source`}
+          title="Photo source"
+        >
+          <ExternalLink size={13} />
+        </a>
+      ) : null}
       {player.injuries.length ? <small>Injury note</small> : null}
     </article>
   )
 }
 
 function StaffCard({ member }: { member: NonNullable<TeamProfile['staff']>[number] }) {
+  const photoSource = member.links?.find((link) => link.type === 'image-source')
   return (
     <article className="staff-card">
       <ProfilePhoto src={member.headshot} fallback={playerInitials(member.name)} className="profile-photo staff-photo" />
@@ -1295,6 +1312,18 @@ function StaffCard({ member }: { member: NonNullable<TeamProfile['staff']>[numbe
         <strong>{member.name}</strong>
         <small>{member.role ?? 'Staff'}</small>
       </div>
+      {photoSource ? (
+        <a
+          className="photo-source-link staff-source-link"
+          href={photoSource.href}
+          target="_blank"
+          rel="noreferrer"
+          aria-label={`${member.name} photo source`}
+          title="Photo source"
+        >
+          <ExternalLink size={13} />
+        </a>
+      ) : null}
     </article>
   )
 }
@@ -1645,6 +1674,7 @@ function VenuesView({ venues, matches }: { venues: ReturnType<typeof getVenues>;
 }
 
 function App() {
+  const homeHref = import.meta.env.BASE_URL || '/'
   const [data, setData] = useState<WorldCupData | null>(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
@@ -1919,15 +1949,15 @@ function App() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand">
+        <a className="brand" href={homeHref} aria-label="Open World Cup tracker home">
           <span className="brand-mark">
-            <Trophy size={20} />
+            <img src={WORLD_CUP_2026_LOGO_URL} alt="" />
           </span>
           <div>
             <strong>FIFA World Cup 2026 Tracker</strong>
             <small>Schedule, groups, bracket, teams, venues</small>
           </div>
-        </div>
+        </a>
         <div className="top-actions">
           <button className={`secondary-button ${shareStatus.state === 'copied' && shareStatus.target === 'app' ? 'success' : ''}`} type="button" onClick={shareCurrentView}>
             {shareStatus.state === 'copied' && shareStatus.target === 'app' ? <Check size={16} /> : <Share2 size={16} />}
