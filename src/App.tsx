@@ -82,6 +82,10 @@ function getInitialTeamCode() {
   return new URLSearchParams(window.location.search).get('team')
 }
 
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === 'AbortError'
+}
+
 async function copyText(text: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text)
@@ -2554,6 +2558,19 @@ function App() {
       .then((nextExtras) => {
         if (active) setExtras(nextExtras)
       })
+      .catch((loadError) => {
+        if (active && !isAbortError(loadError)) {
+          setExtras({
+            ...blankExtras,
+            summarySource: {
+              id: 'espn-summary',
+              label: 'Match summary',
+              status: 'offline',
+              detail: loadError instanceof Error ? loadError.message : 'Match detail feed failed.',
+            },
+          })
+        }
+      })
       .finally(() => {
         if (active) setExtrasLoading(false)
       })
@@ -2573,6 +2590,18 @@ function App() {
     loadTournamentStats(matches, controller.signal)
       .then((nextStats) => {
         if (active) setTournamentStats(nextStats)
+      })
+      .catch((loadError) => {
+        if (active && !isAbortError(loadError)) {
+          setTournamentStats({
+            ...blankTournamentStats,
+            source: {
+              ...blankTournamentStats.source,
+              status: 'offline',
+              detail: loadError instanceof Error ? loadError.message : 'Tournament stats failed.',
+            },
+          })
+        }
       })
       .finally(() => {
         if (active) setStatsLoading(false)
@@ -2594,6 +2623,18 @@ function App() {
       .then((nextIntel) => {
         if (active) setVenueIntel(nextIntel)
       })
+      .catch((loadError) => {
+        if (active && !isAbortError(loadError)) {
+          setVenueIntel({
+            ...blankVenueIntel,
+            source: {
+              ...blankVenueIntel.source,
+              status: 'offline',
+              detail: loadError instanceof Error ? loadError.message : 'Venue enrichment failed.',
+            },
+          })
+        }
+      })
       .finally(() => {
         if (active) setVenueIntelLoading(false)
       })
@@ -2613,6 +2654,11 @@ function App() {
     loadTeamProfile(selectedTeam, matches, controller.signal)
       .then((nextProfile) => {
         if (active) setTeamProfile(nextProfile)
+      })
+      .catch((loadError) => {
+        if (active && !isAbortError(loadError)) {
+          setTeamProfile(null)
+        }
       })
       .finally(() => {
         if (active) setTeamProfileLoading(false)
