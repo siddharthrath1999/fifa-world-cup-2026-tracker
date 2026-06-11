@@ -1254,19 +1254,42 @@
 }
 
 .lineup-grid h4 {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
   margin: 0 0 6px;
   font-size: 13px;
 }
 
-.lineup-grid div {
+.lineup-grid h4 small {
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.lineup-team-card,
+.lineup-section {
   display: grid;
   gap: 5px;
 }
 
-.lineup-grid span,
+.lineup-section {
+  align-content: start;
+}
+
+.lineup-section h5 {
+  margin: 8px 0 2px;
+  color: var(--muted-strong);
+  font-size: 10px;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.lineup-player,
 .mini-list span {
   display: flex;
-  justify-content: space-between;
+  align-items: center;
   gap: 8px;
   padding: 7px 8px;
   border-radius: 6px;
@@ -1274,13 +1297,44 @@
   font-size: 12px;
 }
 
-.lineup-grid small {
+.lineup-player b {
+  width: 20px;
+  flex: 0 0 20px;
+  color: var(--green);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 900;
+}
+
+.lineup-player em {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--ink);
+  font-style: normal;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lineup-player small {
+  flex: 0 0 auto;
   color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.lineup-player.substitute {
+  background: #fbfcfb;
 }
 
 .mini-list {
   display: grid;
   gap: 6px;
+}
+
+.mini-list span {
+  justify-content: space-between;
 }
 
 .tag-list {

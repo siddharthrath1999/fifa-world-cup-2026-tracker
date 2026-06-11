@@ -229,6 +229,45 @@ type EspnSummary = {
       text?: string
     }[]
   }[]
+  keyEvents?: EspnSummaryEvent[]
+  commentary?: {
+    sequence?: number
+    time?: { value?: number; displayValue?: string }
+    text?: string
+    play?: EspnSummaryEvent
+  }[]
+  rosters?: {
+    homeAway?: string
+    team?: {
+      id?: string
+      abbreviation?: string
+      displayName?: string
+      shortDisplayName?: string
+      color?: string
+      logos?: { href?: string }[]
+    }
+    roster?: {
+      active?: boolean
+      starter?: boolean
+      jersey?: string
+      athlete?: {
+        id?: string
+        displayName?: string
+        fullName?: string
+        shortName?: string
+      }
+      position?: {
+        name?: string
+        displayName?: string
+        abbreviation?: string
+      }
+      subbedIn?: boolean
+      subbedOut?: boolean
+      formationPlace?: string
+      stats?: { name?: string; displayName?: string; displayValue?: string; value?: number }[]
+    }[]
+    formation?: string
+  }[]
   broadcasts?: {
     media?: { shortName?: string; name?: string }
     region?: string
@@ -236,6 +275,18 @@ type EspnSummary = {
   headToHeadGames?: {
     events?: { id?: string; links?: { href?: string; text?: string }[]; score?: string; gameDate?: string }[]
   }[]
+}
+
+type EspnSummaryEvent = {
+  id?: string
+  clock?: { value?: number; displayValue?: string }
+  time?: { value?: number; displayValue?: string }
+  team?: { id?: string; displayName?: string; abbreviation?: string }
+  athletesInvolved?: { displayName?: string }[]
+  participants?: { athlete?: { id?: string; displayName?: string } }[]
+  type?: { text?: string; abbreviation?: string; type?: string }
+  text?: string
+  shortText?: string
 }
 
 type EspnLink = {
@@ -457,6 +508,10 @@ function uniqueLinks(links: ExternalLink[]) {
     seen.add(link.href)
     return true
   })
+}
+
+function isDefined<T>(value: T | null | undefined): value is T {
+  return value !== null && value !== undefined
 }
 
 function makeEspnTeamMap(events: EspnEvent[]) {
@@ -936,17 +991,80 @@ export async function loadVenueIntel(venues: Venue[], signal?: AbortSignal): Pro
   }
 }
 
-function parseEvents(summary?: EspnSummary): LiveEvent[] {
+type ParsedLiveEvent = LiveEvent & { order: number }
+
+function eventParticipants(event: EspnSummaryEvent) {
   return (
-    summary?.competitions?.[0]?.details?.map((event, index) => ({
-      id: event.id ?? `event-${index}`,
-      minute: event.clock?.displayValue,
-      team: event.team?.displayName ?? event.team?.abbreviation,
-      athlete: event.athletesInvolved?.map((athlete) => athlete.displayName).filter(Boolean).join(', '),
-      type: event.type?.text ?? event.type?.abbreviation ?? 'Event',
-      text: event.text ?? event.type?.text ?? 'Match event',
-    })) ?? []
+    event.athletesInvolved?.map((athlete) => athlete.displayName).filter(Boolean) ??
+    event.participants?.map((participant) => participant.athlete?.displayName).filter(Boolean) ??
+    []
   )
+}
+
+function eventOrder(event: EspnSummaryEvent, fallback: number) {
+  return event.clock?.value ?? event.time?.value ?? fallback
+}
+
+function parseSummaryEvent(event: EspnSummaryEvent, index: number, prefix: string): ParsedLiveEvent {
+  const participants = eventParticipants(event)
+  return {
+    id: event.id ?? `${prefix}-${index}`,
+    minute: event.clock?.displayValue ?? event.time?.displayValue,
+    team: event.team?.displayName ?? event.team?.abbreviation,
+    athlete: participants.join(', '),
+    type: event.type?.text ?? event.type?.abbreviation ?? 'Commentary',
+    text: event.text ?? event.shortText ?? event.type?.text ?? 'Match event',
+    order: eventOrder(event, index),
+  }
+}
+
+function parseEvents(summary?: EspnSummary): LiveEvent[] {
+  const parsedEvents: ParsedLiveEvent[] = []
+
+  summary?.competitions?.[0]?.details?.forEach((event, index) => {
+    parsedEvents.push(parseSummaryEvent(event, index, 'detail'))
+  })
+
+  summary?.commentary?.forEach((commentary, index) => {
+    const event: EspnSummaryEvent = commentary.play
+      ? {
+          ...commentary.play,
+          clock: commentary.play.clock ?? commentary.time,
+          text: commentary.play.text ?? commentary.text,
+        }
+      : {
+          id: `commentary-${commentary.sequence ?? index}`,
+          clock: commentary.time,
+          text: commentary.text,
+          type: { text: 'Commentary' },
+        }
+    parsedEvents.push({
+      ...parseSummaryEvent(event, commentary.sequence ?? index, 'commentary'),
+      order: commentary.sequence ?? eventOrder(event, index),
+    })
+  })
+
+  summary?.keyEvents?.forEach((event, index) => {
+    parsedEvents.push(parseSummaryEvent(event, index, 'key-event'))
+  })
+
+  const seen = new Set<string>()
+  return parsedEvents
+    .filter((event) => {
+      const key = event.id || `${event.minute ?? ''}|${event.text}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .sort((a, b) => a.order - b.order)
+    .map((event) => ({
+      id: event.id,
+      minute: event.minute,
+      team: event.team,
+      athlete: event.athlete,
+      type: event.type,
+      text: event.text,
+    }))
 }
 
 function parseStats(summary: EspnSummary | undefined): StatLine[] {
@@ -968,16 +1086,58 @@ function parseStats(summary: EspnSummary | undefined): StatLine[] {
     .filter(Boolean) as StatLine[]
 }
 
+function summaryTeamForMatch(
+  match: Match,
+  team?: { id?: string; abbreviation?: string; displayName?: string },
+  homeAway?: string,
+) {
+  if (homeAway === 'home') return match.home
+  if (homeAway === 'away') return match.away
+  if (team?.abbreviation === match.home.code || team?.id === match.home.id) return match.home
+  if (team?.abbreviation === match.away.code || team?.id === match.away.id) return match.away
+  return undefined
+}
+
+function shirtNumber(value?: string) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : 999
+}
+
 function parseLineups(summary: EspnSummary | undefined, match: Match): LineupGroup[] {
+  const rosterLineups =
+    summary?.rosters
+      ?.map((group) => {
+        const team = summaryTeamForMatch(match, group.team, group.homeAway)
+        const players =
+          group.roster
+            ?.filter((entry) => entry.active !== false)
+            .map((entry, index) => {
+              const name = entry.athlete?.displayName ?? entry.athlete?.fullName ?? entry.athlete?.shortName
+              if (!name) return null
+              return {
+                id: entry.athlete?.id ?? `${team?.id ?? group.team?.abbreviation ?? 'team'}-${index}`,
+                name,
+                position: entry.position?.abbreviation ?? entry.position?.displayName ?? entry.position?.name,
+                shirt: entry.jersey,
+                starter: entry.starter,
+              }
+            })
+            .filter(isDefined)
+            .sort((a, b) => {
+              const starterOrder = Number(b.starter === true) - Number(a.starter === true)
+              return starterOrder || shirtNumber(a.shirt) - shirtNumber(b.shirt) || a.name.localeCompare(b.name)
+            }) ?? []
+        if (!team || !players.length) return null
+        return { team, formation: group.formation, players }
+      })
+      .filter(isDefined) ?? []
+
+  if (rosterLineups.length) return rosterLineups as LineupGroup[]
+
   const players = summary?.boxscore?.players ?? []
   return players
     .map((group) => {
-      const team =
-        group.team?.abbreviation === match.home.code
-          ? match.home
-          : group.team?.abbreviation === match.away.code
-            ? match.away
-            : undefined
+      const team = summaryTeamForMatch(match, group.team)
       const athletes =
         group.statistics
           ?.flatMap((statGroup) => statGroup.athletes ?? [])
@@ -995,19 +1155,29 @@ function parseLineups(summary: EspnSummary | undefined, match: Match): LineupGro
 }
 
 function parsePlayerCards(summary: EspnSummary | undefined) {
-  return (
-    summary?.competitions?.[0]?.details
-      ?.filter((event) => {
-        const text = `${event.type?.text ?? ''} ${event.text ?? ''}`.toLowerCase()
-        return text.includes('yellow') || text.includes('red') || text.includes('card')
-      })
-      .map((event, index) => ({
-        id: event.id ?? `card-${index}`,
-        name: event.athletesInvolved?.[0]?.displayName ?? 'Player',
-        team: event.team?.displayName ?? event.team?.abbreviation ?? 'Team',
-        detail: event.text ?? event.type?.text ?? 'Card',
-      })) ?? []
-  )
+  const candidates: EspnSummaryEvent[] = [
+    ...(summary?.competitions?.[0]?.details ?? []),
+    ...(summary?.keyEvents ?? []),
+    ...((summary?.commentary?.map((commentary) => commentary.play).filter(isDefined) as EspnSummaryEvent[] | undefined) ?? []),
+  ]
+  const seen = new Set<string>()
+  return candidates
+    .filter((event) => {
+      const text = `${event.type?.text ?? ''} ${event.type?.type ?? ''} ${event.text ?? ''} ${event.shortText ?? ''}`.toLowerCase()
+      return text.includes('yellow') || text.includes('red') || text.includes('card')
+    })
+    .filter((event, index) => {
+      const key = event.id ?? `${event.clock?.displayValue ?? index}|${event.text}`
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .map((event, index) => ({
+      id: event.id ?? `card-${index}`,
+      name: eventParticipants(event)[0] ?? 'Player',
+      team: event.team?.displayName ?? event.team?.abbreviation ?? 'Team',
+      detail: event.text ?? event.shortText ?? event.type?.text ?? 'Card',
+    }))
 }
 
 function parseForm(summary: EspnSummary | undefined, match: Match) {

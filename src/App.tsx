@@ -906,7 +906,7 @@ function eventTone(event: LiveEvent) {
   if (text.includes('goal')) return 'goal'
   if (text.includes('yellow') || text.includes('red') || text.includes('card')) return 'card'
   if (text.includes('substitution') || text.includes('sub')) return 'sub'
-  if (text.includes('var') || text.includes('penalty')) return 'review'
+  if (/\bvar\b/.test(text) || text.includes('penalty')) return 'review'
   return 'event'
 }
 
@@ -919,7 +919,9 @@ function MatchMomentum({
   events: LiveEvent[]
   loading: boolean
 }) {
-  const markers = events.slice(0, 18)
+  const keyEvents = events.filter((event) => eventTone(event) !== 'event')
+  const markers = (keyEvents.length ? keyEvents : events).slice(0, keyEvents.length ? 18 : 8)
+  const latestEvents = (keyEvents.length ? keyEvents : events).slice(-3)
   const hasEvents = markers.length > 0
   return (
     <section className="detail-block momentum-panel">
@@ -960,7 +962,7 @@ function MatchMomentum({
       </div>
       {hasEvents ? (
         <div className="momentum-latest">
-          {markers.slice(-3).map((event) => (
+          {latestEvents.map((event) => (
             <span key={`latest-${event.id}`}>
               <strong>{event.minute ?? '--'} {event.type}</strong>
               {event.athlete || event.team || event.text}
@@ -1230,18 +1232,45 @@ function DetailView({
 
   const lineups = extras.lineups.length ? (
     <div className="lineup-grid">
-      {extras.lineups.map((lineup) => (
-        <div key={lineup.team.id}>
-          <h4>{lineup.team.shortName}</h4>
-          {lineup.players.slice(0, 18).map((player) => (
-            <span key={`${lineup.team.id}-${player.id}`}>
-              {player.shirt ? `${player.shirt} ` : ''}
-              {player.name}
-              {player.position ? <small>{player.position}</small> : null}
-            </span>
-          ))}
-        </div>
-      ))}
+      {extras.lineups.map((lineup) => {
+        const starters = lineup.players.filter((player) => player.starter !== false)
+        const substitutes = lineup.players.filter((player) => player.starter === false)
+        const fallbackSquad = starters.length ? [] : lineup.players
+        const renderPlayer = (player: LineupPlayer, role: 'starter' | 'substitute' | 'squad') => (
+          <span className={`lineup-player ${role}`} key={`${lineup.team.id}-${player.id}-${role}`}>
+            <b>{player.shirt ?? '-'}</b>
+            <em>{player.name}</em>
+            {player.position ? <small>{player.position}</small> : null}
+          </span>
+        )
+
+        return (
+          <div className="lineup-team-card" key={lineup.team.id}>
+            <h4>
+              {lineup.team.shortName}
+              {lineup.formation ? <small>{lineup.formation}</small> : null}
+            </h4>
+            {starters.length ? (
+              <div className="lineup-section">
+                <h5>Starting XI</h5>
+                {starters.map((player) => renderPlayer(player, 'starter'))}
+              </div>
+            ) : null}
+            {substitutes.length ? (
+              <div className="lineup-section">
+                <h5>Substitutes</h5>
+                {substitutes.map((player) => renderPlayer(player, 'substitute'))}
+              </div>
+            ) : null}
+            {fallbackSquad.length ? (
+              <div className="lineup-section">
+                <h5>Squad</h5>
+                {fallbackSquad.map((player) => renderPlayer(player, 'squad'))}
+              </div>
+            ) : null}
+          </div>
+        )
+      })}
     </div>
   ) : null
 
